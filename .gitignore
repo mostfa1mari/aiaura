@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+dist/
+coverage/
+
+# Environment & secrets — never commit credentials
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Data — raw market data is stored outside git (large, append-only)
+data/raw/
+data/candles/
+*.sqlite
+*.sqlite3
+*.db
+
+# ML artifacts
+models/artifacts/
+mlruns/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
