@@ -21,6 +21,20 @@ from services.market_data.provider import (
     MarketDataProvider,
 )
 from services.market_data.storage import TickStore
+from services.market_data.quality import (
+    QualityReport,
+    QualityIssue,
+    TickQualityMonitor,
+    analyze_ticks,
+    summarize_connection_events,
+)
+from services.market_data.candles import (
+    TIMEFRAMES,
+    CandleBuilder,
+    MultiTimeframeCandleBuilder,
+    build_candles,
+    bucket_start,
+)
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -33,4 +47,16 @@ __all__ = [
     "ProviderConnectionError",
     "MarketDataProvider",
     "TickStore",
+    # quality (Phase 4)
+    "QualityReport",
+    "QualityIssue",
+    "TickQualityMonitor",
+    "analyze_ticks",
+    "summarize_connection_events",
+    # candles (Phase 5)
+    "TIMEFRAMES",
+    "CandleBuilder",
+    "MultiTimeframeCandleBuilder",
+    "build_candles",
+    "bucket_start",
 ]
