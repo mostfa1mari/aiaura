@@ -233,6 +233,9 @@ def analyze(req: AnalyzeRequest):
     market_ts = tick.source_timestamp if tick else None
     latency_ms = (time.time() - t0) * 1000.0
 
+    info = provider.get_assets().get(asset)
+    payout = info.payout if info else None
+
     context = {
         "sub_signals": [
             {"name": s.name, "direction": s.direction, "score": round(s.score, 4), "detail": s.detail}
@@ -260,6 +263,7 @@ def analyze(req: AnalyzeRequest):
         "data_sufficiency": round(result.data_sufficiency, 3),
         "candles_used": result.candles_used,
         "entry_price": entry_price,
+        "payout": payout,
         "market_ts": market_ts,
         "prediction_latency_ms": round(latency_ms, 1),
         "model_version": result.model_version,

@@ -99,11 +99,15 @@ async function loadExpiries() {
   });
 }
 
-function setAsset(symbol) {
-  state.asset = symbol;
+function updateAssetLabel(symbol) {
   const a = state.assets.find((x) => x.symbol === symbol);
   const payout = a && a.payout != null ? ` · ${a.payout}%` : "";
   $("assetBtnLabel").textContent = `${shortSym(symbol)} OTC${payout}`;
+}
+
+function setAsset(symbol) {
+  state.asset = symbol;
+  updateAssetLabel(symbol);
   // Pre-subscribe so ANALYZE is instant (fire-and-forget).
   api("/api/subscribe", {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -111,21 +115,30 @@ function setAsset(symbol) {
   }).catch(() => {});
 }
 
+// Fetch the live catalog and refresh payouts WITHOUT changing the selection
+// (Pocket Option payouts move over time — keep the shown numbers current).
+async function refreshAssets() {
+  const { assets, count } = await api("/api/assets");
+  state.assets = assets;
+  $("analyzeBtn").disabled = assets.length === 0;
+  $("controlsHint").textContent = `${count} OTC assets available`;
+  if (state.asset) updateAssetLabel(state.asset);
+  // if the picker is open, re-render it with fresh payouts
+  if (!$("assetSheet").classList.contains("hidden")) renderAssetList($("assetSearch").value);
+  return assets;
+}
+
 async function loadAssets() {
-  const hint = $("controlsHint");
   try {
-    const { assets, count } = await api("/api/assets");
-    state.assets = assets;
-    if (assets.length) {
+    const assets = await refreshAssets();
+    if (assets.length && !state.asset) {
       const eur = assets.find((a) => a.symbol === "EURUSD_otc");
       setAsset(eur ? "EURUSD_otc" : assets[0].symbol);
     }
-    $("analyzeBtn").disabled = assets.length === 0;
-    hint.textContent = `${count} OTC assets available`;
   } catch (e) {
     $("analyzeBtn").disabled = true;
     $("assetBtnLabel").textContent = "Unavailable";
-    hint.textContent = `Market data unavailable — ${e.message}. Check PO_SSID in .env and restart.`;
+    $("controlsHint").textContent = `Market data unavailable — ${e.message}. Check the server / PO_SSID.`;
   }
 }
 
@@ -170,6 +183,7 @@ function openSheet() {
   sheet.classList.add("enter");
   $("assetSearch").value = "";
   renderAssetList("");
+  refreshAssets().catch(() => {});  // ensure payouts are current when browsing
   // scroll selected into view
   requestAnimationFrame(() => {
     const sel = $("assetList").querySelector('[aria-selected="true"]');
@@ -223,6 +237,7 @@ function showResult(r) {
   $("mRegime").textContent = (r.regime || "—").replace(/_/g, " ");
   $("mSuff").textContent = Math.round(r.data_sufficiency * 100) + "%";
   $("mEntry").textContent = r.entry_price != null ? r.entry_price : "—";
+  $("mPayout").textContent = r.payout != null ? r.payout + "%" : "—";
   $("mLatency").textContent = r.prediction_latency_ms != null ? Math.round(r.prediction_latency_ms) + " ms" : "—";
   $("mModel").textContent = r.model_version || "—";
 
@@ -301,6 +316,7 @@ function init() {
   refreshHealth();
   refreshStats();
   setInterval(refreshHealth, 15000);
+  setInterval(() => { refreshAssets().catch(() => {}); }, 30000);  // keep payouts fresh
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/service-worker.js").catch(() => {});
