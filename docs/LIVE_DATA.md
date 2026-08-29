@@ -17,7 +17,18 @@ PocketOptionMarketDataProvider  (canonical UTC ticks, supervision)
 
 Prereq: `.env` with `PO_SSID` (see `.env.example` for capture instructions).
 
-Live monitor (persists ticks by default):
+Continuous collector (headless; accumulates history for research/ML — the
+prerequisite for validating any predictive edge). Leave it running:
+
+```
+.venv/Scripts/python scripts/collect.py --assets EURUSD_otc,GBPUSD_otc
+```
+
+`--all-otc` collects every available OTC pair (capped by `--max-assets`);
+`--duration N` stops after N seconds (for cron-style bounded runs); status
+lines show per-asset tick counts, quality grade, and connection health.
+
+Live monitor (single asset, full-screen dashboard; persists ticks by default):
 
 ```
 .venv/Scripts/python scripts/live_monitor.py --asset EURUSD_otc
