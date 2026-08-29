@@ -112,6 +112,10 @@ class AnalyzeRequest(BaseModel):
     expiry_s: int
 
 
+class SubscribeRequest(BaseModel):
+    asset: str
+
+
 class FeedbackRequest(BaseModel):
     signal_id: str
     result: str  # WIN | LOSS
@@ -157,6 +161,19 @@ def assets():
         for s, info in sorted(otc.items())
     ]
     return {"assets": items, "count": len(items)}
+
+
+@app.post("/api/subscribe")
+def subscribe(req: SubscribeRequest):
+    """Warm an asset's stream so a subsequent /analyze is instant. Idempotent."""
+    provider = _require_provider()
+    if req.asset not in state.subscribed:
+        try:
+            provider.subscribe(req.asset)
+            state.subscribed.add(req.asset)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"cannot subscribe to {req.asset}: {exc}")
+    return {"ok": True, "subscribed": sorted(state.subscribed)}
 
 
 @app.post("/api/analyze")

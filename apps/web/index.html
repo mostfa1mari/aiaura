@@ -2,12 +2,19 @@
 <html lang="en" dir="ltr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover" />
   <meta name="theme-color" content="#0a0b0f" />
+  <meta name="color-scheme" content="dark" />
+  <!-- iOS standalone (Add to Home Screen = fullscreen native chrome) -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="AI AURA" />
+  <meta name="format-detection" content="telephone=no" />
   <title>AI AURA — OTC Signals</title>
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
-  <link rel="apple-touch-icon" href="/static/icon.svg" />
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
 <body>
@@ -18,26 +25,27 @@
       <span class="brand-mark">◈</span>
       <span class="brand-name">AI&nbsp;AURA</span>
     </div>
-    <button id="statusPill" class="status-pill" data-state="unknown" title="Connection status">
+    <button id="statusPill" class="status-pill" data-state="unknown" type="button" aria-label="Connection status">
       <span class="dot"></span><span id="statusText">…</span>
     </button>
   </header>
 
-  <main class="app">
+  <main class="app" id="appScroll">
     <section class="card controls">
-      <label class="field">
+      <div class="field">
         <span class="field-label">Asset</span>
-        <div class="select-wrap">
-          <select id="assetSelect" aria-label="OTC asset"></select>
-        </div>
-      </label>
+        <button id="assetBtn" class="asset-btn" type="button">
+          <span id="assetBtnLabel">Loading…</span>
+          <span class="asset-btn-chevron">▾</span>
+        </button>
+      </div>
 
-      <label class="field">
+      <div class="field">
         <span class="field-label">Expiry</span>
         <div id="expiryChips" class="chips" role="radiogroup" aria-label="Expiry"></div>
-      </label>
+      </div>
 
-      <button id="analyzeBtn" class="analyze" disabled>
+      <button id="analyzeBtn" class="analyze" type="button" disabled>
         <span class="analyze-label">ANALYZE</span>
         <span class="analyze-spinner" aria-hidden="true"></span>
       </button>
@@ -46,9 +54,7 @@
 
     <section id="resultCard" class="card result hidden" aria-live="polite">
       <div id="signalBig" class="signal-big">—</div>
-      <div class="signal-sub">
-        <span id="signalAsset">—</span> · <span id="signalExpiry">—</span>
-      </div>
+      <div class="signal-sub"><span id="signalAsset">—</span> · <span id="signalExpiry">—</span></div>
 
       <div class="meter" title="Signal strength">
         <div class="meter-track"><div id="strengthBar" class="meter-fill"></div></div>
@@ -68,8 +74,8 @@
       <div class="feedback">
         <p class="feedback-q">Did it win? Report the outcome so AI AURA can learn.</p>
         <div class="feedback-btns">
-          <button id="winBtn" class="fb win">WIN</button>
-          <button id="lossBtn" class="fb loss">LOSS</button>
+          <button id="winBtn" class="fb win" type="button">WIN</button>
+          <button id="lossBtn" class="fb loss" type="button">LOSS</button>
         </div>
         <p id="feedbackDone" class="feedback-done hidden">Recorded ✓</p>
       </div>
@@ -90,6 +96,19 @@
       </p>
     </section>
   </main>
+
+  <!-- Asset picker bottom sheet -->
+  <div id="sheetScrim" class="sheet-scrim hidden" aria-hidden="true"></div>
+  <div id="assetSheet" class="sheet hidden" role="dialog" aria-modal="true" aria-label="Choose asset">
+    <div class="sheet-handle" id="sheetHandle"><span></span></div>
+    <div class="sheet-head">
+      <input id="assetSearch" class="sheet-search" type="text" inputmode="search"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+             placeholder="Search OTC assets…" />
+      <button id="sheetClose" class="sheet-close" type="button" aria-label="Close">✕</button>
+    </div>
+    <div id="assetList" class="asset-list"></div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

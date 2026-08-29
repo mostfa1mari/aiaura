@@ -16,12 +16,37 @@ clear message (recapture the SSID and restart).
 
 ## Flow
 
-Select OTC pair → select expiry → **ANALYZE** → **BUY** / **SELL** with signal
-strength, model agreement, market regime, data sufficiency, entry price,
-latency, model version → you execute manually on Pocket Option → tap **WIN** or
-**LOSS**. Every prediction and outcome is stored (`data/aiaura.db`) for
-post-trade analysis and future model training (Phase 14). The UI never shows
-WAIT; uncertainty is shown as strength/agreement.
+Tap the asset field → a native-style **bottom-sheet picker** opens with search
+over **all** available OTC assets (100+), each showing live payout → pick one
+(it is pre-subscribed immediately so ANALYZE is instant) → select expiry →
+**ANALYZE** → **BUY** / **SELL** with signal strength, model agreement, market
+regime, data sufficiency, entry price, latency, model version → you execute
+manually on Pocket Option → tap **WIN** or **LOSS**. Every prediction and
+outcome is stored (`data/aiaura.db`) for post-trade analysis and future model
+training (Phase 14). The UI never shows WAIT; uncertainty is shown as
+strength/agreement.
+
+**All assets:** the picker lists every currently-available OTC pair from the
+live catalog; any of them can be analyzed. The API keeps a default subscription
+(EURUSD_otc) only to keep the socket warm — it is not a limit on which assets
+you can use.
+
+## Native iOS / mobile feel
+
+The PWA is built to feel like a native phone app, not a website:
+
+- No page scroll / rubber-band (fixed app shell; only inner regions scroll,
+  with momentum and `overscroll-behavior: contain`).
+- No visible scrollbars anywhere.
+- No pinch/double-tap zoom (`viewport` `maximum-scale=1, user-scalable=no`,
+  `touch-action: manipulation`, plus `gesturestart`/double-tap guards).
+- No long-press callout or text selection (`-webkit-touch-callout: none`,
+  `user-select: none`; inputs stay selectable), no tap-highlight flash.
+- Full safe-area handling for notch / home indicator (`viewport-fit=cover` +
+  `env(safe-area-inset-*)`).
+- Standalone display + proper icons (`apple-touch-icon`, maskable PNGs via
+  `scripts/make_icons.py`) so "Add to Home Screen" launches fullscreen.
+- Spring-like, interruptible transitions; `prefers-reduced-motion` respected.
 
 ## API (`apps/api/main.py`)
 
@@ -30,6 +55,7 @@ WAIT; uncertainty is shown as strength/agreement.
 | `GET /api/health` | provider status, tick count, model version |
 | `GET /api/assets` | available OTC symbols + live payout |
 | `GET /api/expiries` | offered expiries (5s…15m) |
+| `POST /api/subscribe` `{asset}` | warm an asset's stream (called on selection) so analyze is instant |
 | `POST /api/analyze` `{asset, expiry_s}` | generate + record a BUY/SELL signal |
 | `POST /api/feedback` `{signal_id, result}` | record WIN/LOSS |
 | `GET /api/stats` | wins/losses/win-rate (settled only), by asset/expiry, max losing streak |
