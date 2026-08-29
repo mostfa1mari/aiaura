@@ -1,95 +1,57 @@
-# AI AURA — System Architecture (Phase 0 design)
+# Architecture
 
-> This architecture is **source-agnostic by design**: every component downstream of the
-> Data Source Adapter is independent of where market data comes from. This is deliberate,
-> because the single biggest open question of the project (see
-> [DATA_SOURCE_RESEARCH.md](DATA_SOURCE_RESEARCH.md)) is *which* data can legitimately
-> feed it. Nothing in this document asserts that a Pocket Option data feed exists.
+## Principle
 
-## 1. Component overview
+AI AURA is a **read-only signal and research platform** for Pocket Option
+OTC. It never places trades. The user executes signals manually and reports
+WIN/LOSS back; learning happens in controlled batches with validation.
+
+## Layering (target)
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        DATA PLANE                                    │
-│                                                                      │
-│  [Data Source Adapter(s)]   ← pluggable; one adapter per provider    │
-│          │                                                           │
-│      [Collector]            ← connection mgmt, reconnect, sequencing │
-│          │                                                           │
-│      [Normalizer]           ← canonical record shape, UTC, precision │
-│          │                                                           │
-│      [Validator]            ← dup/gap/order/staleness/corruption     │
-│          │            └────→ data_quality_events                     │
-│      [Raw Store]            ← immutable, append-only                 │
-│          │                                                           │
-│      [Candle Builder]       ← 1s/5s/…/15m bars, versioned rules      │
-└──────────┼──────────────────────────────────────────────────────────┘
-           │
-┌──────────┼──────────────────────────────────────────────────────────┐
-│          ▼             RESEARCH / MODEL PLANE                        │
-│      [Feature Engine]       ← versioned, leakage-tested              │
-│          │                                                           │
-│   ┌──────┴────────┐                                                  │
-│   ▼               ▼                                                  │
-│ [Strategy      [ML Models]  ← each: direction + prob + version       │
-│  Modules]         │                                                  │
-│   └──────┬────────┘                                                  │
-│          ▼                                                           │
-│    [Regime Engine]──┐                                                │
-│    [Similarity      │                                                │
-│     Engine]─────────┤                                                │
-│          ▼          ▼                                                │
-│      [Meta Model / Ensemble]  → BUY | SELL + internal telemetry      │
-│          │                                                           │
-│   [Backtester]  [Walk-forward Harness]  [Experiment Tracker]         │
-│   [Champion/Challenger Registry]  [Drift Monitor]                    │
-└──────────┼──────────────────────────────────────────────────────────┘
-           │
-┌──────────┼──────────────────────────────────────────────────────────┐
-│          ▼               SERVING PLANE                               │
-│      [Signal API]  FastAPI: /api/signals/analyze, /api/feedback      │
-│          │         auth · rate limit · validation · audit log        │
-│          ▼                                                           │
-│      [PWA]  Next.js/TS: pick asset → pick expiry → ANALYZE →         │
-│             BUY/SELL → WIN/LOSS feedback → history/analytics         │
-│                                                                      │
-│      [Learning Loop]  post-trade analysis → batched, gated updates   │
-│      [Admin Dashboard]  data health, drift, model performance        │
-└─────────────────────────────────────────────────────────────────────┘
+Pocket Option OTC
+        ↓
+PocketOptionApi (vendored, audited)          ← only services/market_data touches this
+        ↓
+PocketOptionMarketDataProvider               ← implements MarketDataProvider
+        ↓
+Canonical market data (UTC ticks/candles)    ← the ONLY contract downstream code sees
+        ↓
+Candle Engine → Feature Engine → Strategies → ML Models → Meta Model
+        ↓
+BUY / SELL signal  →  PWA  →  user executes manually  →  WIN/LOSS feedback
+        ↓
+Learning pipeline (batched, walk-forward validated, champion/challenger)
 ```
 
-## 2. Key design rules
+Swapping the data source later = one new `MarketDataProvider` subclass.
 
-1. **Reproducibility.** Every signal row references `model_version`,
-   `feature_version`, `dataset_version`, and the exact data snapshot timestamp. A
-   signal must be recomputable from the DB alone.
-2. **No lookahead.** Features/strategies/models at time T consume only data ≤ T.
-   Enforced by automated leakage tests and a canary-leak strategy the backtester must flag.
-3. **Signal engine ≠ risk engine.** Direction prediction is separated from the
-   monitoring layer that tracks streaks/drawdown/degradation. No Martingale anywhere.
-4. **Raw vs. derived.** Raw ticks are immutable and append-only; candles/features are
-   derived, versioned, and rebuildable.
-5. **Honest uncertainty.** Internal confidence/probability is stored and displayed as
-   an estimate with sample sizes and intervals — never as a guarantee.
-6. **Expiry realism.** An expiry is only exposed in the UI if the underlying data
-   granularity can settle it reliably (e.g., 3–30s expiries require tick/1s data with
-   verified feed latency; 1m+ can settle on 1s/1m bars).
+## Repository layout
 
-## 3. Technology choices (Phase 0 defaults)
+```
+aiaura/
+  apps/                    # (upcoming) web PWA + api service
+  services/
+    market_data/           # provider abstraction, PO implementation, storage
+      vendor/              # pinned pocketoptionapi snapshot (audited, patched)
+  data/                    # raw/derived market data — gitignored, local only
+  docs/                    # audits, schemas, validation reports
+  scripts/                 # live_monitor, validate_live_otc, ops tooling
+  tests/                   # offline tests incl. the no-order-execution guard
+```
 
-| Layer | Choice | Rationale / environment note |
-|---|---|---|
-| Backend & research | Python 3.13 + FastAPI | Installed (3.13.5); ML ecosystem |
-| Frontend | Next.js + React + TypeScript | Node v24.18 installed |
-| Database | SQLAlchemy + Alembic; SQLite for dev, PostgreSQL for prod | **Docker/PostgreSQL not installed** on the dev machine; SQLite keeps early research local, migrations stay Postgres-compatible, CI runs against both |
-| Cache/queues | None initially; Redis only when a measured need appears | Redis not installed; avoid speculative infra |
-| ML | scikit-learn + LightGBM first; deep learning only if justified | Per project rules |
-| Testing | pytest, hypothesis (property tests), Playwright, Vitest | |
-| Packaging | Docker later (Phase 13); not required for research phases | Docker not installed |
+## Key design decisions
 
-## 4. Open dependency
-
-Everything in the Data Plane is **parameterized by the Phase 0 data-source decision**
-recorded in [PHASE0_REPORT.md](PHASE0_REPORT.md). Until a legitimate source is chosen,
-no adapter is implemented — a stub adapter against fake data is prohibited by project
-rule 1.2.
+1. **Vendored provider library** — pinned audited snapshot, two marked
+   patches (TLS verification, stream batching). See `VENDOR_NOTES.md`.
+2. **Canonical UTC everywhere** — provider-native clocks (PO wire = UTC+2)
+   are normalized at the boundary; the raw wire value is retained per tick.
+3. **Push-based ingestion** — provider tees the library's tick handler; no
+   polling races, no 500-tick ring-buffer cap; listeners fan out (storage,
+   monitor, future engines).
+4. **Supervised connection** — re-subscribe on reconnect, client rebuild on
+   thread death, terminal stop on auth failure.
+5. **Raw vs derived separation** — raw ticks are immutable history; quality
+   flags, candles, and features are derived layers with their own versions.
+6. **Read-only enforced by tests** — the order-execution blocklist is a
+   failing test away from any regression.
