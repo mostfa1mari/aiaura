@@ -35,6 +35,7 @@ def main() -> int:
     s = raw.strip().strip("'\"").strip()
     is_auth = s.startswith('42["auth"')
     has_session = '"session"' in s
+    has_session_token = '"sessionToken"' in s
     has_isdemo = "isDemo" in s
     has_uid = "uid" in s
     non_ascii = sum(1 for ch in s if ord(ch) > 127)
@@ -43,24 +44,36 @@ def main() -> int:
 
     print("PO_SSID structural check (no value shown):")
     print(f"  length:                 {len(s)}")
-    print(f"  starts with 42[\"auth\"]:  {is_auth}")
-    print(f"  has \"session\" field:     {has_session}")
-    print(f"  has isDemo field:        {has_isdemo}")
-    print(f"  has uid field:           {has_uid}")
-    print(f"  account mode:            {mode}")
-    print(f"  non-ASCII chars (emoji): {non_ascii}")
+    print(f'  starts with 42["auth"]: {is_auth}')
+    print(f'  has "session" field:    {has_session}')
+    print(f'  has "sessionToken":     {has_session_token}')
+    print(f"  has isDemo field:       {has_isdemo}")
+    print(f"  has uid field:          {has_uid}")
+    print(f"  account mode:           {mode}")
+    print(f"  non-ASCII chars:        {non_ascii}")
 
     try:
         load_ssid(dotenv_path=PROJECT_ROOT / ".env")
     except MissingCredentialError as exc:
         print("\nVERDICT: INVALID")
         print("reason:", str(exc).splitlines()[0])
-        if not is_auth or not has_session:
+        if has_session_token and not has_session:
+            print(
+                "\nThis is the WRONG socket's auth frame: it uses 'sessionToken' "
+                "(the chart/events socket), not 'session'+'isDemo' (the trading "
+                "socket the library needs).\n"
+                "In DevTools > Network > WS, there are SEVERAL connections. Pick "
+                "the one whose URL contains 'po.market' (e.g. api-eu.po.market or "
+                "demo-api-eu.po.market). Open its Messages, type 'isDemo' in the "
+                "filter box, and copy the SENT frame that starts with "
+                '42["auth",{"session":"...","isDemo":...,"uid":...}].'
+            )
+        elif not is_auth or not has_session:
             print(
                 "\nYou likely copied a different WebSocket frame. You need the "
-                'one the browser SENDS that starts exactly with 42["auth",'
-                '{"session":"..."}. In DevTools > Network > WS > Messages, type '
-                "'auth' in the filter box and copy that sent (green ↑) frame."
+                'one the browser SENDS that starts with 42["auth",{"session":"..."}. '
+                "In the po.market WS connection's Messages, filter by 'isDemo' and "
+                "copy that sent frame."
             )
         return 1
 
