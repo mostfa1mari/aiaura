@@ -9,5 +9,9 @@ requests>=2.32.0
 python-dotenv>=1.0.1
 pyarrow>=17.0.0
 
+# API + PWA host (apps/api)
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+
 # Dev / test
 pytest>=8.0.0

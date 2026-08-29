@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0b0f" />
+  <title>AI AURA — OTC Signals</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="icon" href="/static/icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="/static/icon.svg" />
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="aurora" aria-hidden="true"></div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">◈</span>
+      <span class="brand-name">AI&nbsp;AURA</span>
+    </div>
+    <button id="statusPill" class="status-pill" data-state="unknown" title="Connection status">
+      <span class="dot"></span><span id="statusText">…</span>
+    </button>
+  </header>
+
+  <main class="app">
+    <section class="card controls">
+      <label class="field">
+        <span class="field-label">Asset</span>
+        <div class="select-wrap">
+          <select id="assetSelect" aria-label="OTC asset"></select>
+        </div>
+      </label>
+
+      <label class="field">
+        <span class="field-label">Expiry</span>
+        <div id="expiryChips" class="chips" role="radiogroup" aria-label="Expiry"></div>
+      </label>
+
+      <button id="analyzeBtn" class="analyze" disabled>
+        <span class="analyze-label">ANALYZE</span>
+        <span class="analyze-spinner" aria-hidden="true"></span>
+      </button>
+      <p id="controlsHint" class="hint"></p>
+    </section>
+
+    <section id="resultCard" class="card result hidden" aria-live="polite">
+      <div id="signalBig" class="signal-big">—</div>
+      <div class="signal-sub">
+        <span id="signalAsset">—</span> · <span id="signalExpiry">—</span>
+      </div>
+
+      <div class="meter" title="Signal strength">
+        <div class="meter-track"><div id="strengthBar" class="meter-fill"></div></div>
+        <div class="meter-labels"><span>Signal strength</span><span id="strengthVal">—</span></div>
+      </div>
+
+      <div class="stats-grid">
+        <div class="stat"><div class="stat-k">Model agreement</div><div id="mAgreement" class="stat-v">—</div></div>
+        <div class="stat"><div class="stat-k">Market regime</div><div id="mRegime" class="stat-v">—</div></div>
+        <div class="stat"><div class="stat-k">Data sufficiency</div><div id="mSuff" class="stat-v">—</div></div>
+        <div class="stat"><div class="stat-k">Entry price</div><div id="mEntry" class="stat-v">—</div></div>
+        <div class="stat"><div class="stat-k">Latency</div><div id="mLatency" class="stat-v">—</div></div>
+        <div class="stat"><div class="stat-k">Model</div><div id="mModel" class="stat-v">—</div></div>
+      </div>
+      <div id="resultNote" class="note hidden"></div>
+
+      <div class="feedback">
+        <p class="feedback-q">Did it win? Report the outcome so AI AURA can learn.</p>
+        <div class="feedback-btns">
+          <button id="winBtn" class="fb win">WIN</button>
+          <button id="lossBtn" class="fb loss">LOSS</button>
+        </div>
+        <p id="feedbackDone" class="feedback-done hidden">Recorded ✓</p>
+      </div>
+      <div class="signal-time"><span id="signalTime">—</span></div>
+    </section>
+
+    <section class="card mini-stats">
+      <div class="mini-row">
+        <div class="mini"><div class="mini-v" id="sTotal">0</div><div class="mini-k">signals</div></div>
+        <div class="mini"><div class="mini-v" id="sWin">0</div><div class="mini-k">wins</div></div>
+        <div class="mini"><div class="mini-v" id="sLoss">0</div><div class="mini-k">losses</div></div>
+        <div class="mini"><div class="mini-v" id="sRate">—</div><div class="mini-k">win rate*</div></div>
+      </div>
+      <p class="disclaimer">
+        *Over your reported outcomes only — sample may be tiny. Experimental
+        baseline, <strong>not a validated edge, not financial advice, no
+        guarantee</strong>. You execute every trade manually.
+      </p>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

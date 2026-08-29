@@ -12,8 +12,8 @@ Status legend: ✅ done · 🔶 in progress · ⬜ pending · 🔒 blocked on us
 | 4 | Data quality layer + `DATA_QUALITY.md` | ✅ (offline-tested) |
 | 5 | Candle engine (1s…15m from ticks; forming candles marked) | ✅ (offline-tested) |
 | 6 | Prediction target definition + reference-price methodology | ✅ (offline-tested; `PREDICTION_TARGET.md`) |
-| 7 | Feature engine (trend/momentum/volatility/structure/MTF/micro) | 🔶 next |
-| 8 | Baseline strategy modules | ⬜ |
+| 7 | Feature engine (trend/momentum/volatility/structure/MTF/micro) | 🔶 partial (baseline indicators in signal engine; full engine pending) |
+| 8 | Baseline strategy modules | 🔶 baseline heuristic ensemble live (`signal_engine`); more strategies pending |
 | 9 | Event-driven backtester + metrics | ⬜ |
 | 10 | ML model families + calibration | ⬜ |
 | 11 | Ensemble + meta-model (UI shows BUY/SELL only) | ⬜ |
@@ -23,8 +23,8 @@ Status legend: ✅ done · 🔶 in progress · ⬜ pending · 🔒 blocked on us
 | 15 | Overfitting protection + leakage tests | ⬜ |
 | 16 | Champion/challenger + model registry | ⬜ |
 | 17 | Drift detection | ⬜ |
-| 18 | PWA | ⬜ |
-| 19 | Live signal pipeline | ⬜ |
+| 18 | PWA | ✅ (mobile-first PWA on FastAPI, live-tested end-to-end; `APP.md`) |
+| 19 | Live signal pipeline | ✅ baseline path live (data→candles→signal→BUY/SELL→WIN/LOSS→store); ML stage pending |
 | 20 | Latency measurement (3s/5s viability check) | ⬜ (per-tick latency already recorded) |
 | 21 | Full test pyramid | 🔶 (21 offline tests) |
 | 22 | Security hardening | 🔶 (redaction, TLS patch, guard tests done; CI secret-scan pending) |

@@ -1,0 +1,15 @@
+{
+  "name": "AI AURA — OTC Signals",
+  "short_name": "AI AURA",
+  "description": "Read-only Pocket Option OTC research & signal assistant (experimental).",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0b0f",
+  "theme_color": "#0a0b0f",
+  "icons": [
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/static/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}

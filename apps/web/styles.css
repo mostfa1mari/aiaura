@@ -1,0 +1,201 @@
+:root {
+  --bg: #0a0b0f;
+  --bg-elev: #14161d;
+  --bg-elev-2: #1b1e28;
+  --line: #262a36;
+  --text: #eef1f7;
+  --text-dim: #99a1b3;
+  --text-faint: #626a7d;
+  --buy: #16c784;
+  --buy-glow: rgba(22, 199, 132, 0.35);
+  --sell: #ea3943;
+  --sell-glow: rgba(234, 57, 67, 0.35);
+  --accent: #7c5cff;
+  --accent-2: #22d3ee;
+  --radius: 18px;
+  --shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  min-height: 100dvh;
+}
+
+.aurora {
+  position: fixed;
+  inset: -30% -10% auto -10%;
+  height: 60vh;
+  background:
+    radial-gradient(50% 60% at 20% 20%, rgba(124, 92, 255, 0.28), transparent 70%),
+    radial-gradient(45% 55% at 85% 10%, rgba(34, 211, 238, 0.22), transparent 70%),
+    radial-gradient(40% 50% at 60% 50%, rgba(22, 199, 132, 0.15), transparent 70%);
+  filter: blur(20px);
+  pointer-events: none;
+  z-index: 0;
+}
+
+.topbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px calc(16px + env(safe-area-inset-top));
+  padding-top: max(16px, env(safe-area-inset-top));
+  max-width: 520px;
+  margin: 0 auto;
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 0.12em; }
+.brand-mark {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  font-size: 20px;
+}
+.brand-name { font-size: 15px; }
+
+.status-pill {
+  display: inline-flex; align-items: center; gap: 7px;
+  background: var(--bg-elev); border: 1px solid var(--line);
+  color: var(--text-dim); border-radius: 999px; padding: 6px 12px;
+  font-size: 12px; cursor: pointer;
+}
+.status-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-faint); }
+.status-pill[data-state="good"] .dot { background: var(--buy); box-shadow: 0 0 8px var(--buy-glow); }
+.status-pill[data-state="degraded"] .dot { background: #f5a623; }
+.status-pill[data-state="down"] .dot { background: var(--sell); box-shadow: 0 0 8px var(--sell-glow); }
+
+.app {
+  position: relative; z-index: 1;
+  max-width: 520px; margin: 0 auto;
+  padding: 8px 16px calc(32px + env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+.card {
+  background: color-mix(in oklab, var(--bg-elev) 92%, transparent);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(8px);
+}
+
+.field { display: block; margin-bottom: 18px; }
+.field-label {
+  display: block; font-size: 12px; text-transform: uppercase;
+  letter-spacing: 0.1em; color: var(--text-dim); margin-bottom: 8px;
+}
+.select-wrap { position: relative; }
+.select-wrap::after {
+  content: "▾"; position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
+  color: var(--text-dim); pointer-events: none;
+}
+select {
+  width: 100%; appearance: none; -webkit-appearance: none;
+  background: var(--bg-elev-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 40px 14px 14px; font-size: 16px; font-weight: 600;
+}
+
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  background: var(--bg-elev-2); color: var(--text-dim);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 9px 15px; font-size: 14px; font-weight: 600; cursor: pointer;
+  transition: transform 0.08s ease, border-color 0.15s, color 0.15s, background 0.15s;
+}
+.chip:active { transform: scale(0.95); }
+.chip[aria-checked="true"] {
+  color: #fff; border-color: transparent;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+.analyze {
+  width: 100%; margin-top: 4px; position: relative;
+  border: none; border-radius: 14px; cursor: pointer;
+  padding: 18px; font-size: 17px; font-weight: 800; letter-spacing: 0.14em;
+  color: #fff; background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  box-shadow: 0 8px 30px rgba(124, 92, 255, 0.35);
+  transition: transform 0.08s ease, opacity 0.2s, filter 0.2s;
+}
+.analyze:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(0.3); box-shadow: none; }
+.analyze:not(:disabled):active { transform: scale(0.98); }
+.analyze.loading .analyze-label { opacity: 0; }
+.analyze-spinner { display: none; }
+.analyze.loading .analyze-spinner {
+  display: block; position: absolute; inset: 0; margin: auto;
+  width: 22px; height: 22px; border: 3px solid rgba(255,255,255,0.35);
+  border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.hint { color: var(--text-faint); font-size: 12px; margin: 10px 2px 0; min-height: 1em; }
+
+.result { text-align: center; animation: rise 0.35s cubic-bezier(0.2,0.7,0.2,1); }
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+.signal-big {
+  font-size: 64px; font-weight: 900; letter-spacing: 0.02em; line-height: 1.05;
+  margin: 4px 0 2px;
+}
+.result.buy .signal-big { color: var(--buy); text-shadow: 0 0 40px var(--buy-glow); }
+.result.sell .signal-big { color: var(--sell); text-shadow: 0 0 40px var(--sell-glow); }
+.signal-sub { color: var(--text-dim); font-size: 14px; margin-bottom: 18px; font-weight: 600; }
+
+.meter { margin: 6px 0 18px; }
+.meter-track { height: 10px; background: var(--bg-elev-2); border-radius: 999px; overflow: hidden; }
+.meter-fill {
+  height: 100%; width: 0%; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent-2), var(--accent));
+  transition: width 0.5s cubic-bezier(0.2,0.7,0.2,1);
+}
+.result.buy .meter-fill { background: linear-gradient(90deg, #0fae74, var(--buy)); }
+.result.sell .meter-fill { background: linear-gradient(90deg, #b92d35, var(--sell)); }
+.meter-labels { display: flex; justify-content: space-between; margin-top: 7px; font-size: 12px; color: var(--text-dim); }
+
+.stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; text-align: left; }
+.stat { background: var(--bg-elev-2); border: 1px solid var(--line); border-radius: 12px; padding: 11px 13px; }
+.stat-k { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; }
+.stat-v { font-size: 15px; font-weight: 700; margin-top: 3px; word-break: break-word; }
+
+.note {
+  margin-top: 14px; padding: 10px 12px; border-radius: 10px; font-size: 12px;
+  background: rgba(245, 166, 35, 0.1); border: 1px solid rgba(245,166,35,0.3); color: #f5c877;
+  text-align: left;
+}
+
+.feedback { margin-top: 20px; border-top: 1px solid var(--line); padding-top: 16px; }
+.feedback-q { font-size: 13px; color: var(--text-dim); margin: 0 0 12px; }
+.feedback-btns { display: flex; gap: 10px; }
+.fb {
+  flex: 1; padding: 15px; border-radius: 12px; font-weight: 800; font-size: 15px;
+  letter-spacing: 0.08em; cursor: pointer; border: 1px solid transparent;
+  transition: transform 0.08s ease, opacity 0.2s;
+}
+.fb:active { transform: scale(0.97); }
+.fb.win { background: rgba(22,199,132,0.15); color: var(--buy); border-color: rgba(22,199,132,0.4); }
+.fb.loss { background: rgba(234,57,67,0.15); color: var(--sell); border-color: rgba(234,57,67,0.4); }
+.fb:disabled { opacity: 0.4; cursor: default; }
+.feedback-done { color: var(--buy); font-weight: 700; margin: 12px 0 0; font-size: 14px; }
+.signal-time { margin-top: 14px; color: var(--text-faint); font-size: 11px; }
+
+.mini-stats { padding: 16px 20px; }
+.mini-row { display: flex; justify-content: space-between; text-align: center; }
+.mini-v { font-size: 22px; font-weight: 800; }
+.mini-k { font-size: 11px; color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 2px; }
+.disclaimer { margin: 14px 0 0; font-size: 11px; line-height: 1.5; color: var(--text-faint); text-align: center; }
+.disclaimer strong { color: var(--text-dim); }
+
+.hidden { display: none !important; }
+
+@media (min-width: 560px) {
+  .signal-big { font-size: 72px; }
+}

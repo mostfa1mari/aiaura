@@ -100,6 +100,7 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         self._connection_events: List[dict] = []
         self._terminal_reason: Optional[str] = None
         self._last_connect_ts = 0.0       # baseline so a fresh connect isn't "stale"
+        self._last_subscribe_ts = 0.0     # a new subscription needs time before it's "stale"
         self._seq = itertools.count()
 
         self._stop = threading.Event()
@@ -323,6 +324,7 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
             raise MarketDataError(f"subscribe({asset!r}) failed")
         with self._lock:
             self._subscribed[asset] = period_s
+            self._last_subscribe_ts = time.time()
         self._record_event("subscribed", asset)
 
     def unsubscribe(self, asset: str) -> None:
@@ -604,6 +606,12 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
                 self._client = None
             if old is not None:
                 self._stop_client(old)
+                # Wait for the old I/O thread to actually terminate BEFORE
+                # starting a new client, so it cannot race the new one on the
+                # vendored process-global state (global_value flags).
+                old_thread = getattr(old, "websocket_thread", None)
+                if old_thread is not None:
+                    old_thread.join(timeout=10)
             self._reconnect_count += 1
             self._start_client()
             self._resubscribe_all()
@@ -619,14 +627,15 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
             return bool(self._subscribed)
 
     def _seconds_since_tick_or_connect(self) -> float:
-        """Seconds since the last tick, floored at the last connect time so a
-        freshly (re)connected client isn't judged stale before its first tick."""
+        """Seconds since the last tick, floored at the last connect AND last
+        subscribe time — so neither a fresh (re)connect nor a newly-added
+        subscription is judged stale before its first tick can arrive."""
         with self._lock:
             last_tick = max(
                 (t.received_timestamp for t in self._last_tick.values()),
                 default=0.0,
             )
-            baseline = max(last_tick, self._last_connect_ts)
+            baseline = max(last_tick, self._last_connect_ts, self._last_subscribe_ts)
         return (time.time() - baseline) if baseline > 0 else float("inf")
 
     def _resubscribe_all(self) -> bool:
@@ -645,6 +654,8 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
                     self._record_event("resubscribe_failed", asset)
             except Exception as exc:
                 self._record_event("resubscribe_failed", f"{asset}: {exc}")
+        with self._lock:
+            self._last_subscribe_ts = time.time()  # give re-subs time before "stale"
         return any_ok
 
     # ------------------------------------------------------------------
