@@ -25,9 +25,12 @@
       <span class="brand-mark">◈</span>
       <span class="brand-name">AI&nbsp;AURA</span>
     </div>
-    <button id="statusPill" class="status-pill" data-state="unknown" type="button" aria-label="Connection status">
-      <span class="dot"></span><span id="statusText">…</span>
-    </button>
+    <div class="topbar-right">
+      <button id="statusPill" class="status-pill" data-state="unknown" type="button" aria-label="Connection status">
+        <span class="dot"></span><span id="statusText">…</span>
+      </button>
+      <button id="settingsBtn" class="icon-btn" type="button" aria-label="Settings">⚙</button>
+    </div>
   </header>
 
   <main class="app" id="appScroll">
@@ -96,6 +99,30 @@
       </p>
     </section>
   </main>
+
+  <!-- Settings / connection setup -->
+  <div id="setupScrim" class="sheet-scrim hidden" aria-hidden="true"></div>
+  <div id="setupSheet" class="sheet setup-sheet hidden" role="dialog" aria-modal="true" aria-label="Connection settings">
+    <div class="sheet-handle" id="setupHandle"><span></span></div>
+    <div class="setup-body">
+      <h2 class="setup-title">Connection</h2>
+      <p class="setup-intro">Point the app at your AI AURA server. Leave the URL
+        empty to use the same site that served this app.</p>
+      <label class="setup-field">
+        <span>Server URL</span>
+        <input id="cfgBase" type="url" inputmode="url" autocomplete="off"
+               autocapitalize="off" autocorrect="off" spellcheck="false"
+               placeholder="https://your-worker.up.railway.app" />
+      </label>
+      <label class="setup-field">
+        <span>Access token</span>
+        <input id="cfgToken" type="password" autocomplete="off"
+               placeholder="AIAURA_TOKEN (if your server requires one)" />
+      </label>
+      <p id="setupMsg" class="setup-msg"></p>
+      <button id="cfgSave" class="analyze" type="button" style="margin-top:6px">SAVE & CONNECT</button>
+    </div>
+  </div>
 
   <!-- Asset picker bottom sheet -->
   <div id="sheetScrim" class="sheet-scrim hidden" aria-hidden="true"></div>

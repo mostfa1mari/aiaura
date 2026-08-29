@@ -12,6 +12,7 @@ or:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -22,7 +23,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -31,7 +33,7 @@ from services.market_data.pocket_option_provider import PocketOptionMarketDataPr
 from services.market_data.security import MissingCredentialError, load_ssid, setup_logging
 from services.market_data.storage import TickStore
 from services.signal_engine import BASELINE_VERSION, generate_signal
-from services.signal_engine.store import SignalStore
+from services.signal_engine.store import make_store
 
 logger = logging.getLogger("aiaura.api")
 
@@ -53,7 +55,7 @@ DEFAULT_ASSET = "EURUSD_otc"
 
 class AppState:
     provider: Optional[PocketOptionMarketDataProvider] = None
-    store: Optional[SignalStore] = None
+    store: Optional[object] = None       # SqliteSignalStore | PostgresSignalStore
     tick_store: Optional[TickStore] = None
     subscribed: set = set()
     startup_error: Optional[str] = None
@@ -64,9 +66,10 @@ state = AppState()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # Store is always available (local). Provider may fail (missing/expired SSID);
-    # keep the API up and report status so the UI can show a clear message.
-    state.store = SignalStore(PROJECT_ROOT / "data" / "aiaura.db")
+    # Store is always available (Postgres/Supabase if DATABASE_URL set, else
+    # local SQLite). Provider may fail (missing/expired SSID); keep the API up
+    # and report status so the UI can show a clear message.
+    state.store = make_store(PROJECT_ROOT / "data" / "aiaura.db")
     state.tick_store = TickStore(PROJECT_ROOT / "data" / "raw" / "ticks")
     try:
         ssid = load_ssid()
@@ -106,6 +109,26 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(title="AI AURA", version=BASELINE_VERSION, lifespan=lifespan)
 
+# CORS so a PWA hosted on another origin (e.g. Vercel) can call this worker.
+# Auth is by bearer token (not cookies), so a permissive default origin is safe;
+# restrict with ALLOWED_ORIGINS="https://you.vercel.app,https://..." if desired.
+_origins = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_origins or ["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def require_token(authorization: str = Header(default="")):
+    """Enforce AIAURA_TOKEN when set. No-op when unset (LAN/dev). /api/health
+    stays open so a client can probe reachability before it has the token."""
+    token = (os.environ.get("AIAURA_TOKEN") or "").strip()
+    if token and authorization != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="invalid or missing access token")
+
 
 class AnalyzeRequest(BaseModel):
     asset: str
@@ -132,11 +155,14 @@ def _require_provider() -> PocketOptionMarketDataProvider:
 
 @app.get("/api/health")
 def health():
+    auth_required = bool((os.environ.get("AIAURA_TOKEN") or "").strip())
     if state.provider is None:
-        return {"connected": False, "error": state.startup_error or "provider not started"}
+        return {"connected": False, "auth_required": auth_required,
+                "error": state.startup_error or "provider not started"}
     h = state.provider.health_check()
     return {
         "connected": h.connected,
+        "auth_required": auth_required,
         "status": h.status,
         "time_synced": h.time_synced,
         "ticks_received": h.ticks_received,
@@ -144,6 +170,7 @@ def health():
         "reconnects": h.reconnect_count,
         "detail": h.detail,
         "model_version": BASELINE_VERSION,
+        "store": getattr(state.store, "backend", "unknown"),
     }
 
 
@@ -152,7 +179,7 @@ def expiries():
     return {"expiries": EXPIRIES}
 
 
-@app.get("/api/assets")
+@app.get("/api/assets", dependencies=[Depends(require_token)])
 def assets():
     provider = _require_provider()
     otc = provider.get_otc_assets()
@@ -163,7 +190,7 @@ def assets():
     return {"assets": items, "count": len(items)}
 
 
-@app.post("/api/subscribe")
+@app.post("/api/subscribe", dependencies=[Depends(require_token)])
 def subscribe(req: SubscribeRequest):
     """Warm an asset's stream so a subsequent /analyze is instant. Idempotent."""
     provider = _require_provider()
@@ -176,7 +203,7 @@ def subscribe(req: SubscribeRequest):
     return {"ok": True, "subscribed": sorted(state.subscribed)}
 
 
-@app.post("/api/analyze")
+@app.post("/api/analyze", dependencies=[Depends(require_token)])
 def analyze(req: AnalyzeRequest):
     provider = _require_provider()
     if req.expiry_s not in EXPIRY_TIMEFRAME:
@@ -242,7 +269,7 @@ def analyze(req: AnalyzeRequest):
     }
 
 
-@app.post("/api/feedback")
+@app.post("/api/feedback", dependencies=[Depends(require_token)])
 def feedback(req: FeedbackRequest):
     if state.store is None:
         raise HTTPException(status_code=503, detail="store unavailable")
@@ -255,14 +282,14 @@ def feedback(req: FeedbackRequest):
     return {"ok": True}
 
 
-@app.get("/api/stats")
+@app.get("/api/stats", dependencies=[Depends(require_token)])
 def stats():
     if state.store is None:
         raise HTTPException(status_code=503, detail="store unavailable")
     return state.store.stats()
 
 
-@app.get("/api/recent")
+@app.get("/api/recent", dependencies=[Depends(require_token)])
 def recent(limit: int = 50):
     if state.store is None:
         raise HTTPException(status_code=503, detail="store unavailable")

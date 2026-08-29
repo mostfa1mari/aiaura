@@ -12,6 +12,7 @@ pyarrow>=17.0.0
 # API + PWA host (apps/api)
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+psycopg[binary]>=3.2.0   # Postgres/Supabase store (cloud); SQLite needs no driver
 
 # Dev / test
 pytest>=8.0.0

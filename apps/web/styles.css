@@ -94,6 +94,14 @@ body { display: flex; flex-direction: column; }
 }
 .brand-name { font-size: 15px; }
 
+.topbar-right { display: flex; align-items: center; gap: 8px; }
+.icon-btn {
+  width: 34px; height: 34px; border-radius: 999px;
+  background: var(--bg-elev); border: 1px solid var(--line);
+  color: var(--text-dim); font-size: 15px; font-family: inherit;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.icon-btn:active { transform: scale(0.92); }
 .status-pill {
   display: inline-flex; align-items: center; gap: 7px;
   background: var(--bg-elev); border: 1px solid var(--line);
@@ -294,6 +302,22 @@ body { display: flex; flex-direction: column; }
 .asset-row .pay { font-size: 13px; color: var(--text-dim); font-weight: 600; }
 .asset-row .pay.high { color: var(--buy); }
 .asset-empty { text-align: center; color: var(--text-faint); padding: 30px; font-size: 14px; }
+
+/* Setup / connection sheet */
+.setup-sheet { max-height: none; }
+.setup-body { padding: 4px 20px 24px; }
+.setup-title { margin: 4px 0 6px; font-size: 20px; font-weight: 800; }
+.setup-intro { margin: 0 0 16px; font-size: 13px; color: var(--text-dim); line-height: 1.5; }
+.setup-field { display: block; margin-bottom: 14px; }
+.setup-field span { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); margin-bottom: 7px; }
+.setup-field input {
+  width: 100%; background: var(--bg-elev-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 12px; padding: 13px 14px;
+  font-size: 16px; font-family: inherit; outline: none;
+}
+.setup-field input:focus { border-color: var(--accent); }
+.setup-msg { min-height: 1em; margin: 4px 0 6px; font-size: 13px; color: var(--sell); }
+.setup-msg.ok { color: var(--buy); }
 
 @media (min-width: 560px) { .signal-big { font-size: 72px; } }
 

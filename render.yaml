@@ -1,0 +1,21 @@
+# Render Blueprint for the AI AURA worker (alternative to Railway).
+# Use the "Starter" plan or higher — the Free plan sleeps on inactivity, which
+# kills the persistent WebSocket. Set PO_SSID / AIAURA_TOKEN / DATABASE_URL in
+# the Render dashboard (marked sync:false so they are not stored in git).
+services:
+  - type: web
+    name: aiaura-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: PO_SSID
+        sync: false
+      - key: AIAURA_TOKEN
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false

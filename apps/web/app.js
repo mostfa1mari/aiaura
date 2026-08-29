@@ -1,11 +1,22 @@
 "use strict";
 
 const $ = (id) => document.getElementById(id);
-const api = (path, opts) => fetch(path, opts).then(async (r) => {
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
-  return body;
-});
+
+function cfgGet(k, d = "") { try { return localStorage.getItem(k) || d; } catch { return d; } }
+function cfgSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+const cfg = { base: cfgGet("aiaura_base"), token: cfgGet("aiaura_token") };
+
+const api = (path, opts = {}) => {
+  const headers = Object.assign({}, opts.headers || {});
+  if (cfg.token) headers["Authorization"] = "Bearer " + cfg.token;
+  const url = (cfg.base ? cfg.base.replace(/\/$/, "") : "") + path;
+  return fetch(url, Object.assign({}, opts, { headers })).then(async (r) => {
+    const body = await r.json().catch(() => ({}));
+    if (r.status === 401) { openSetup("This server needs an access token."); throw new Error(body.detail || "unauthorized"); }
+    if (!r.ok) throw new Error(body.detail || `HTTP ${r.status}`);
+    return body;
+  });
+};
 
 const state = { asset: null, assets: [], expiry: null, lastSignalId: null };
 
@@ -23,10 +34,48 @@ function setStatus(stateName, text) {
 async function refreshHealth() {
   try {
     const h = await api("/api/health");
+    if (h.auth_required && !cfg.token) { setStatus("down", "token"); openSetup("This server requires an access token."); return false; }
     if (!h.connected) { setStatus("down", "offline"); return false; }
     setStatus(h.status === "GOOD" ? "good" : "degraded", h.status.toLowerCase());
     return true;
-  } catch { setStatus("down", "offline"); return false; }
+  } catch (e) {
+    setStatus("down", "offline");
+    // Unreachable and no server configured yet -> guide the user to setup.
+    if (!cfg.base) openSetup("Can't reach a server. Enter your AI AURA server URL.");
+    return false;
+  }
+}
+
+// ---------- Connection setup ----------
+function openSetup(msg) {
+  $("cfgBase").value = cfg.base;
+  $("cfgToken").value = cfg.token;
+  const m = $("setupMsg"); m.classList.remove("ok"); m.textContent = msg || "";
+  $("setupScrim").classList.remove("hidden");
+  const s = $("setupSheet"); s.classList.remove("hidden", "leaving"); s.classList.add("enter");
+}
+function closeSetup() {
+  const s = $("setupSheet");
+  s.classList.remove("enter"); s.classList.add("leaving");
+  $("setupScrim").classList.add("hidden");
+  const done = () => { s.classList.add("hidden"); s.classList.remove("leaving"); };
+  s.addEventListener("transitionend", done, { once: true });
+  setTimeout(done, 340);
+}
+async function saveSetup() {
+  cfg.base = $("cfgBase").value.trim();
+  cfg.token = $("cfgToken").value.trim();
+  cfgSet("aiaura_base", cfg.base);
+  cfgSet("aiaura_token", cfg.token);
+  const m = $("setupMsg"); m.classList.remove("ok"); m.textContent = "Connecting…";
+  const ok = await refreshHealth();
+  if (ok) {
+    m.classList.add("ok"); m.textContent = "Connected ✓";
+    loadAssets(); refreshStats();
+    setTimeout(closeSetup, 500);
+  } else {
+    m.textContent = "Still can't connect — check the URL and token.";
+  }
 }
 
 async function loadExpiries() {
@@ -237,6 +286,10 @@ function init() {
   $("winBtn").addEventListener("click", () => sendFeedback("WIN"));
   $("lossBtn").addEventListener("click", () => sendFeedback("LOSS"));
   $("statusPill").addEventListener("click", refreshHealth);
+  $("settingsBtn").addEventListener("click", () => openSetup(""));
+  $("setupScrim").addEventListener("click", closeSetup);
+  $("setupHandle").addEventListener("click", closeSetup);
+  $("cfgSave").addEventListener("click", saveSetup);
   $("assetBtn").addEventListener("click", openSheet);
   $("sheetClose").addEventListener("click", closeSheet);
   $("sheetScrim").addEventListener("click", closeSheet);
