@@ -11,8 +11,8 @@ Status legend: ✅ done · 🔶 in progress · ⬜ pending · 🔒 blocked on us
 | 3 | Raw tick storage (Parquet) | ✅ (live-verified: 1166 ticks round-tripped) |
 | 4 | Data quality layer + `DATA_QUALITY.md` | ✅ (offline-tested) |
 | 5 | Candle engine (1s…15m from ticks; forming candles marked) | ✅ (offline-tested) |
-| 6 | Prediction target definition + reference-price methodology | ⬜ |
-| 7 | Feature engine (trend/momentum/volatility/structure/MTF/micro) | ⬜ |
+| 6 | Prediction target definition + reference-price methodology | ✅ (offline-tested; `PREDICTION_TARGET.md`) |
+| 7 | Feature engine (trend/momentum/volatility/structure/MTF/micro) | 🔶 next |
 | 8 | Baseline strategy modules | ⬜ |
 | 9 | Event-driven backtester + metrics | ⬜ |
 | 10 | ML model families + calibration | ⬜ |
