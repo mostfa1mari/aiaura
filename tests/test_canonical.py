@@ -121,3 +121,24 @@ def test_history_gate_passes_when_tz_detected():
     provider._client = _ClientStub(detected=True)
     # Should not raise.
     provider._ensure_stream_tz_detected(timeout_s=0.1)
+
+
+def test_staleness_floored_at_connect_time():
+    # A freshly connected client with no ticks yet must NOT look stale (else the
+    # supervisor would rebuild before the first tick arrives).
+    import time as _time
+
+    provider = make_provider()
+    provider._last_connect_ts = _time.time()
+    assert provider._seconds_since_tick_or_connect() < 1.0
+
+    # After a tick, staleness is measured from the tick (also recent here).
+    sync = StubTimeSync(synced_now=_time.time())
+    provider._ingest_tick("EURUSD_otc", _time.time() + TZ_OFFSET, 1.1, sync)
+    assert provider._seconds_since_tick_or_connect() < 1.0
+
+
+def test_staleness_infinite_before_any_connect_or_tick():
+    provider = make_provider()
+    # never connected, no ticks -> treat as infinitely stale
+    assert provider._seconds_since_tick_or_connect() == float("inf")

@@ -61,6 +61,8 @@ _HISTORY_OFFSET = 45000          # loadHistoryPeriod offset the server tolerates
 _DISCONNECT_GRACE_S = 45.0       # let the vendored in-thread retries run first
 _STALE_TICK_S = 15.0             # connected but silent this long -> re-subscribe
 _RESUBSCRIBE_COOLDOWN_S = 20.0   # min gap between stale-triggered re-subscribes
+_STALE_REBUILD_S = 30.0          # silent this long despite connected flag -> rebuild
+_REBUILD_COOLDOWN_S = 60.0       # min gap between rebuild attempts
 _MAX_CONNECTION_EVENTS = 200
 
 
@@ -97,6 +99,7 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         self._reconnect_count = 0
         self._connection_events: List[dict] = []
         self._terminal_reason: Optional[str] = None
+        self._last_connect_ts = 0.0       # baseline so a fresh connect isn't "stale"
         self._seq = itertools.count()
 
         self._stop = threading.Event()
@@ -171,6 +174,7 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         self._install_instance_hooks(client)
         with self._lock:
             self._client = client
+            self._last_connect_ts = time.time()
         self._record_event("connected")
 
         catalog_deadline = time.time() + self._catalog_timeout_s
@@ -511,10 +515,12 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         was_connected = True
         disconnected_since: Optional[float] = None
         last_resubscribe = 0.0
+        last_rebuild = 0.0
         rebuild_backoff = 0
         while not self._stop.wait(1.0):
             connected = bool(global_value.websocket_is_connected)
             error_reason = str(global_value.websocket_error_reason or "")
+            now = time.time()
 
             if global_value.check_websocket_if_error and "Unauthorized" in error_reason:
                 if self._terminal_reason is None:
@@ -535,22 +541,30 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
                     # the old socket — re-send them.
                     self._record_event("reconnected_in_thread")
                     self._reconnect_count += 1
-                    if self._resubscribe_all():
-                        last_resubscribe = time.time()
-                else:
-                    # Safety net for reconnects too fast to catch as a
-                    # transition, or any silent server-side subscription loss:
-                    # if we hold subscriptions but ticks have gone quiet, and
-                    # the cooldown has elapsed, re-subscribe.
-                    now = time.time()
-                    if (
-                        self._has_subscriptions()
-                        and self._seconds_since_last_tick() > _STALE_TICK_S
-                        and now - last_resubscribe > _RESUBSCRIBE_COOLDOWN_S
-                    ):
-                        self._record_event("stale_resubscribe", f"no ticks {_STALE_TICK_S:.0f}s+")
-                        if self._resubscribe_all():
-                            last_resubscribe = now
+                    self._resubscribe_all()
+                    last_resubscribe = now
+                elif self._has_subscriptions():
+                    # `connected` is only the vendored flag, which can be stale-
+                    # True after a clean close or a half-open socket. Use TICK
+                    # staleness (floored at connect time) as ground truth.
+                    stale = self._seconds_since_tick_or_connect()
+                    if stale > _STALE_REBUILD_S and (now - last_rebuild) > _REBUILD_COOLDOWN_S:
+                        # Zombie / half-open: flag says connected but no data.
+                        # Escalate to a full rebuild.
+                        self._record_event("stale_rebuild", f"no ticks {stale:.0f}s despite connected flag")
+                        last_rebuild = now
+                        try:
+                            self._rebuild()
+                            last_resubscribe = time.time()
+                        except Exception as exc:
+                            self._record_event("rebuild_failed", str(exc))
+                            logger.warning("provider rebuild failed: %s", exc)
+                    elif stale > _STALE_TICK_S and (now - last_resubscribe) > _RESUBSCRIBE_COOLDOWN_S:
+                        # Cheaper first attempt: re-send the subscription. Update
+                        # the cooldown regardless of success (no per-second spam).
+                        self._record_event("stale_resubscribe", f"no ticks {stale:.0f}s")
+                        last_resubscribe = now
+                        self._resubscribe_all()
             else:
                 if was_connected:
                     self._record_event("disconnect_detected")
@@ -561,11 +575,13 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
                 # the shared global state.
                 thread_alive = self._client_thread_alive()
                 waited = time.time() - disconnected_since if disconnected_since else 0.0
-                if not thread_alive and waited >= _DISCONNECT_GRACE_S:
+                if (not thread_alive and waited >= _DISCONNECT_GRACE_S
+                        and (now - last_rebuild) > _REBUILD_COOLDOWN_S):
                     delay = min(60, 5 * (2 ** rebuild_backoff))
                     self._record_event("rebuilding_client", f"thread dead after {waited:.0f}s, backoff {delay}s")
                     if self._stop.wait(delay):
                         break
+                    last_rebuild = time.time()
                     try:
                         self._rebuild()
                         disconnected_since = None
@@ -602,13 +618,16 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         with self._lock:
             return bool(self._subscribed)
 
-    def _seconds_since_last_tick(self) -> float:
+    def _seconds_since_tick_or_connect(self) -> float:
+        """Seconds since the last tick, floored at the last connect time so a
+        freshly (re)connected client isn't judged stale before its first tick."""
         with self._lock:
-            last = max(
+            last_tick = max(
                 (t.received_timestamp for t in self._last_tick.values()),
-                default=None,
+                default=0.0,
             )
-        return (time.time() - last) if last is not None else float("inf")
+            baseline = max(last_tick, self._last_connect_ts)
+        return (time.time() - baseline) if baseline > 0 else float("inf")
 
     def _resubscribe_all(self) -> bool:
         client = self._client
