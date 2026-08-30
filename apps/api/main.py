@@ -60,6 +60,14 @@ EXPIRY_TIMEFRAME = {
 EXPIRIES = sorted(EXPIRY_TIMEFRAME)
 DEFAULT_ASSET = "EURUSD_otc"
 
+# Assets the server collects (persists ticks for) continuously while it runs.
+# Override with AIAURA_COLLECT="all" | "off" | "EURUSD_otc,GBPUSD_otc,...".
+_COLLECT_DEFAULT = [
+    "EURUSD_otc", "GBPUSD_otc", "USDJPY_otc", "AUDUSD_otc", "USDCAD_otc",
+    "USDCHF_otc", "NZDUSD_otc", "EURJPY_otc", "EURGBP_otc", "GBPJPY_otc",
+    "XAUUSD_otc", "XAGUSD_otc",
+]
+
 
 class AppState:
     provider: Optional[PocketOptionMarketDataProvider] = None
@@ -102,13 +110,11 @@ async def lifespan(_app: FastAPI):
         provider.add_tick_listener(state.tick_store.append)  # keep collecting while serving
         provider.connect()
         state.provider = provider
-        # Subscribe a default asset immediately so ticks flow and the
-        # connection stays warm (an idle, unsubscribed socket receives nothing).
-        try:
-            provider.subscribe(DEFAULT_ASSET)
-            state.subscribed.add(DEFAULT_ASSET)
-        except Exception as exc:
-            logger.warning("default subscribe failed: %s", exc)
+        # Continuously collect data: subscribe a set of OTC assets so their
+        # ticks flow and are persisted to data/raw/ticks (the TickStore listener
+        # is already attached). This runs for as long as the server runs — no
+        # separate collector process needed.
+        _start_collection(provider)
         # Automatic self-learning: retrains in the background and hot-swaps a
         # promoted champion. Disable with AIAURA_AUTOLEARN=0.
         if (os.environ.get("AIAURA_AUTOLEARN", "1") or "1") != "0":
@@ -198,6 +204,40 @@ class FeedbackRequest(BaseModel):
     result: str  # WIN | LOSS
 
 
+def _start_collection(provider: PocketOptionMarketDataProvider) -> list:
+    """Subscribe the collection set so the server persists their ticks while it
+    runs. Unavailable assets are skipped. EURUSD_otc is always included so the
+    signal path and the connection stay warm."""
+    mode = (os.environ.get("AIAURA_COLLECT", "default") or "default").strip()
+    if mode.lower() == "off":
+        assets = [DEFAULT_ASSET]
+    elif mode.lower() in ("all", "default"):
+        if mode.lower() == "all":
+            try:
+                assets = sorted(provider.get_otc_assets())
+            except Exception:
+                assets = list(_COLLECT_DEFAULT)
+        else:
+            assets = list(_COLLECT_DEFAULT)
+        cap = int(os.environ.get("AIAURA_COLLECT_MAX", "40"))
+        assets = assets[:cap]
+    else:
+        assets = [a.strip() for a in mode.split(",") if a.strip()]
+    if DEFAULT_ASSET not in assets:
+        assets.insert(0, DEFAULT_ASSET)
+
+    ok = []
+    for asset in assets:
+        try:
+            provider.subscribe(asset)
+            state.subscribed.add(asset)
+            ok.append(asset)
+        except Exception as exc:
+            logger.info("collect: skip %s (%s)", asset, exc)
+    logger.info("collecting %d assets continuously: %s", len(ok), ok)
+    return ok
+
+
 def _require_provider() -> PocketOptionMarketDataProvider:
     if state.provider is None or not state.provider.is_connected():
         detail = state.startup_error or (
@@ -225,6 +265,8 @@ def health():
         "detail": h.detail,
         "model_version": BASELINE_VERSION,
         "store": getattr(state.store, "backend", "unknown"),
+        "collecting_assets": len(h.subscribed_assets),
+        "ticks_persisted": getattr(state.tick_store, "ticks_persisted", 0),
     }
 
 
