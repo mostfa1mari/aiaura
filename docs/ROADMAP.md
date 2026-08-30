@@ -12,23 +12,23 @@ Status legend: ✅ done · 🔶 in progress · ⬜ pending · 🔒 blocked on us
 | 4 | Data quality layer + `DATA_QUALITY.md` | ✅ (offline-tested) |
 | 5 | Candle engine (1s…15m from ticks; forming candles marked) | ✅ (offline-tested) |
 | 6 | Prediction target definition + reference-price methodology | ✅ (offline-tested; `PREDICTION_TARGET.md`) |
-| 7 | Feature engine (trend/momentum/volatility/structure/MTF/micro) | 🔶 partial (baseline indicators in signal engine; full engine pending) |
-| 8 | Baseline strategy modules | 🔶 baseline heuristic ensemble live (`signal_engine`); more strategies pending |
-| 9 | Event-driven backtester + metrics | ⬜ |
-| 10 | ML model families + calibration | ⬜ |
-| 11 | Ensemble + meta-model (UI shows BUY/SELL only) | ⬜ |
-| 12 | Market regime detection | ⬜ |
+| 7 | Feature engine (36 features, no-look-ahead) | ✅ (`FEATURES.md`) |
+| 8 | Baseline strategy modules | 🔶 heuristic ensemble live; more strategies pending |
+| 9 | Event-driven backtester + honest metrics | ✅ (`BACKTESTING.md`) |
+| 10 | ML model families + walk-forward eval | ✅ (`MACHINE_LEARNING.md`) |
+| 11 | ML wired into app behind SignalResult | ✅ (meta-ensemble pending) |
+| 12 | Market regime detection | 🔶 baseline regime labels |
 | 13 | Historical similarity | ⬜ |
-| 14 | Self-learning loop (WIN/LOSS feedback, batched retraining) | ⬜ |
-| 15 | Overfitting protection + leakage tests | ⬜ |
-| 16 | Champion/challenger + model registry | ⬜ |
-| 17 | Drift detection | ⬜ |
+| 14 | Self-learning loop (held-out gate, champion/challenger) | ✅ (`MACHINE_LEARNING.md`) |
+| 15 | Overfitting protection: effective-N, held-out gate, leakage tests | ✅ |
+| 16 | Champion/challenger + model registry | ✅ |
+| 17 | Drift detection | ✅ |
 | 18 | PWA | ✅ (mobile-first PWA on FastAPI, live-tested end-to-end; `APP.md`) |
 | 19 | Live signal pipeline | ✅ baseline path live (data→candles→signal→BUY/SELL→WIN/LOSS→store); ML stage pending |
 | 20 | Latency measurement (3s/5s viability check) | ⬜ (per-tick latency already recorded) |
-| 21 | Full test pyramid | 🔶 (21 offline tests) |
+| 21 | Full test pyramid | 🔶 (106 offline tests; live e2e verified) |
 | 22 | Security hardening | 🔶 (redaction, TLS patch, guard tests done; CI secret-scan pending) |
-| 23 | Admin/research dashboard | ⬜ |
+| 23 | Admin/research dashboard | ✅ (`/admin`) |
 | 24–26 | Structure, docs, git checkpoints | 🔶 ongoing |
 | 27–28 | No martingale, no guarantees | permanent constraints |
 

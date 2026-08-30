@@ -14,6 +14,9 @@ __pycache__/
 data/
 !data/.gitkeep
 
+# Trained model artifacts (generated per environment)
+models/
+
 # Logs
 logs/
 

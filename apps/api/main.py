@@ -29,10 +29,12 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from services.learning_engine.registry import ModelRegistry
 from services.market_data.pocket_option_provider import PocketOptionMarketDataProvider
 from services.market_data.security import MissingCredentialError, load_ssid, setup_logging
 from services.market_data.storage import TickStore
 from services.signal_engine import BASELINE_VERSION, generate_signal
+from services.signal_engine.ml_predictor import MLPredictor
 from services.signal_engine.store import make_store
 
 logger = logging.getLogger("aiaura.api")
@@ -57,6 +59,8 @@ class AppState:
     provider: Optional[PocketOptionMarketDataProvider] = None
     store: Optional[object] = None       # SqliteSignalStore | PostgresSignalStore
     tick_store: Optional[TickStore] = None
+    ml_predictor: Optional[MLPredictor] = None
+    model_record: Optional[object] = None
     subscribed: set = set()
     startup_error: Optional[str] = None
 
@@ -71,6 +75,18 @@ async def lifespan(_app: FastAPI):
     # and report status so the UI can show a clear message.
     state.store = make_store(PROJECT_ROOT / "data" / "aiaura.db")
     state.tick_store = TickStore(PROJECT_ROOT / "data" / "raw" / "ticks")
+
+    # Use a trained champion model if one exists; otherwise the baseline.
+    try:
+        registry = ModelRegistry(PROJECT_ROOT / "models")
+        champ = registry.load_champion()
+        if champ is not None:
+            rec = registry.champion_record()
+            state.ml_predictor = MLPredictor(champ, rec.version)
+            state.model_record = rec
+            logger.info("champion model loaded: %s", rec.version)
+    except Exception as exc:
+        logger.warning("no champion model loaded: %s", exc)
     try:
         ssid = load_ssid()
         setup_logging(ssid, level=logging.INFO,
@@ -226,7 +242,10 @@ def analyze(req: AnalyzeRequest):
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
 
-    result = generate_signal(candles, timeframe)
+    if state.ml_predictor is not None:
+        result = state.ml_predictor.predict(candles, timeframe)
+    else:
+        result = generate_signal(candles, timeframe)
 
     tick = provider.get_latest_tick(asset)
     entry_price = tick.price if tick else None
@@ -293,6 +312,38 @@ def stats():
     return state.store.stats()
 
 
+@app.get("/api/model", dependencies=[Depends(require_token)])
+def model_info():
+    from dataclasses import asdict
+
+    from services.learning_engine.self_learning import detect_drift
+
+    active = state.ml_predictor is not None
+    rec = state.model_record
+    champion = asdict(rec) if rec is not None else None
+    drift = None
+    if rec is not None and state.store is not None:
+        s = state.store.stats()
+        baseline_wr = (rec.metrics or {}).get("oos_win_rate")
+        if baseline_wr and s.get("settled", 0) >= 30:
+            drift = detect_drift(s["wins"], s["settled"], float(baseline_wr))
+    records = []
+    try:
+        records = [asdict(r) for r in ModelRegistry(PROJECT_ROOT / "models").records()]
+    except Exception:
+        pass
+    return {
+        "using_ml": active,
+        "active_model": rec.version if rec else BASELINE_VERSION,
+        "champion": champion,
+        "records": records,
+        "drift": drift,
+        "note": ("A trained champion model is active." if active else
+                 "No trained model yet — using the transparent baseline. Train one "
+                 "with scripts/train.py once enough data is collected."),
+    }
+
+
 @app.get("/api/recent", dependencies=[Depends(require_token)])
 def recent(limit: int = 50):
     if state.store is None:
@@ -312,6 +363,14 @@ def index():
     if idx.exists():
         return FileResponse(str(idx))
     return JSONResponse({"error": "PWA not built"}, status_code=404)
+
+
+@app.get("/admin")
+def admin():
+    page = WEB_DIR / "admin.html"
+    if page.exists():
+        return FileResponse(str(page))
+    raise HTTPException(status_code=404, detail="dashboard not built")
 
 
 @app.get("/manifest.webmanifest")
