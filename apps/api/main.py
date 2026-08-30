@@ -31,6 +31,7 @@ from pydantic import BaseModel
 
 from services.feature_engine import compute_features
 from services.latency import assess as assess_latency
+from services.learning_engine.auto import AutoLearner
 from services.learning_engine.dataset import build_dataset
 from services.learning_engine.registry import ModelRegistry
 from services.market_data.pocket_option_provider import PocketOptionMarketDataProvider
@@ -66,6 +67,7 @@ class AppState:
     tick_store: Optional[TickStore] = None
     ml_predictor: Optional[MLPredictor] = None
     model_record: Optional[object] = None
+    auto_learner: Optional[AutoLearner] = None
     subscribed: set = set()
     startup_error: Optional[str] = None
 
@@ -107,6 +109,30 @@ async def lifespan(_app: FastAPI):
             state.subscribed.add(DEFAULT_ASSET)
         except Exception as exc:
             logger.warning("default subscribe failed: %s", exc)
+        # Automatic self-learning: retrains in the background and hot-swaps a
+        # promoted champion. Disable with AIAURA_AUTOLEARN=0.
+        if (os.environ.get("AIAURA_AUTOLEARN", "1") or "1") != "0":
+            def _on_promote(version: str):
+                try:
+                    reg = ModelRegistry(PROJECT_ROOT / "models")
+                    model = reg.load_champion()
+                    rec = reg.champion_record()
+                    if model is not None and rec is not None:
+                        state.ml_predictor = MLPredictor(model, rec.version)
+                        state.model_record = rec
+                        logger.info("hot-swapped champion -> %s", rec.version)
+                except Exception:
+                    logger.warning("champion hot-swap failed", exc_info=True)
+
+            from services.learning_engine.auto import AutoLearnConfig
+            cfg = AutoLearnConfig()
+            if os.environ.get("AIAURA_AUTOLEARN_WARMUP"):
+                cfg.warmup_delay_s = float(os.environ["AIAURA_AUTOLEARN_WARMUP"])
+            if os.environ.get("AIAURA_AUTOLEARN_INTERVAL"):
+                cfg.interval_s = float(os.environ["AIAURA_AUTOLEARN_INTERVAL"])
+            state.auto_learner = AutoLearner(
+                provider, state.store, PROJECT_ROOT / "models", _on_promote, cfg)
+            state.auto_learner.start()
         logger.info("provider connected")
     except MissingCredentialError as exc:
         state.startup_error = str(exc).splitlines()[0]
@@ -117,6 +143,11 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        if state.auto_learner is not None:
+            try:
+                state.auto_learner.stop()
+            except Exception:
+                pass
         if state.provider is not None:
             try:
                 state.provider.disconnect()
@@ -333,7 +364,26 @@ def feedback(req: FeedbackRequest):
         raise HTTPException(status_code=400, detail=str(exc))
     if not ok:
         raise HTTPException(status_code=404, detail="unknown signal_id or already settled")
+    # Deep post-trade analysis on a loss: record WHY it lost (never retrain on a
+    # single trade — the batched auto-learner uses the accumulated evidence).
+    if req.result.upper() == "LOSS":
+        try:
+            from services.learning_engine.post_trade import analyze_loss
+            pred = state.store.get_prediction(req.signal_id)
+            if pred:
+                state.store.set_analysis(req.signal_id, analyze_loss(pred))
+        except Exception:
+            logger.debug("loss analysis failed", exc_info=True)
     return {"ok": True}
+
+
+@app.get("/api/losses", dependencies=[Depends(require_token)])
+def losses():
+    from services.learning_engine.post_trade import aggregate_losses
+
+    if state.store is None:
+        raise HTTPException(status_code=503, detail="store unavailable")
+    return aggregate_losses(state.store.losses_for_analysis(limit=500))
 
 
 @app.get("/api/stats", dependencies=[Depends(require_token)])
@@ -345,11 +395,13 @@ def stats():
 
 @app.post("/api/reset", dependencies=[Depends(require_token)])
 def reset_stats():
-    """Clear all recorded predictions and WIN/LOSS outcomes (counters -> 0)."""
+    """UI-ONLY reset: zero the visible counters but KEEP all data — the model
+    keeps learning from every recorded prediction and outcome."""
     if state.store is None:
         raise HTTPException(status_code=503, detail="store unavailable")
-    removed = state.store.reset()
-    return {"ok": True, "removed": removed}
+    hidden = state.store.reset_display()
+    return {"ok": True, "hidden": hidden,
+            "note": "Counters reset for display only; all data is kept and still used for learning."}
 
 
 @app.get("/api/model", dependencies=[Depends(require_token)])
@@ -372,15 +424,24 @@ def model_info():
         records = [asdict(r) for r in ModelRegistry(PROJECT_ROOT / "models").records()]
     except Exception:
         pass
+    al = state.auto_learner
+    auto = None
+    if al is not None:
+        auto = {"running": True, "cycles": al.cycles,
+                "last_train_at": al.last_train_at or None,
+                "last_result": al.last_result}
     return {
         "using_ml": active,
         "active_model": rec.version if rec else BASELINE_VERSION,
         "champion": champion,
         "records": records,
         "drift": drift,
+        "auto_learner": auto,
         "note": ("A trained champion model is active." if active else
-                 "No trained model yet — using the transparent baseline. Train one "
-                 "with scripts/train.py once enough data is collected."),
+                 "No trained model yet — the app uses the transparent baseline. "
+                 "Auto-learning is retraining in the background and will deploy a "
+                 "champion automatically only once one shows a real, significant "
+                 "edge on held-out data (it never deploys noise)."),
     }
 
 

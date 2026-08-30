@@ -70,11 +70,49 @@ class SqliteSignalStore:
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SQLITE_SCHEMA)
+        self._conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+        try:  # migration: post-trade loss/why analysis
+            self._conn.execute("ALTER TABLE predictions ADD COLUMN analysis_json TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         self._conn.commit()
 
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def get_meta(self, key: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO meta(key,value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (key, str(value)))
+            self._conn.commit()
+
+    def set_analysis(self, signal_id: str, analysis: dict) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE predictions SET analysis_json=? WHERE signal_id=?",
+                               (json.dumps(analysis), signal_id))
+            self._conn.commit()
+
+    def all_for_training(self) -> List[dict]:
+        """Every prediction+outcome, ignoring any UI reset — the model learns
+        from ALL data regardless of what the counter shows."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM predictions ORDER BY created_at").fetchall()
+        return [dict(r) for r in rows]
+
+    def losses_for_analysis(self, limit: int = 500) -> List[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM predictions WHERE result='LOSS' ORDER BY result_at DESC LIMIT ?",
+                (limit,)).fetchall()
+        return [dict(r) for r in rows]
 
     def record_prediction(self, **kw) -> str:
         row = _new_row(**kw)
@@ -97,8 +135,17 @@ class SqliteSignalStore:
             self._conn.commit()
             return cur.rowcount > 0
 
-    def reset(self) -> int:
-        """Delete all predictions/outcomes. Returns the number removed."""
+    def reset_display(self) -> int:
+        """UI-ONLY reset: hide counters before now, but KEEP all data so the
+        model keeps learning from it. Returns how many are now hidden."""
+        now = time.time()
+        with self._lock:
+            hidden = self._conn.execute(
+                "SELECT COUNT(*) FROM predictions WHERE created_at < ?", (now,)).fetchone()[0]
+        self.set_meta("stats_since", now)
+        return int(hidden)
+
+    def reset(self) -> int:  # hard delete — kept for internal/testing only
         with self._lock:
             n = self._conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
             self._conn.execute("DELETE FROM predictions")
@@ -120,26 +167,31 @@ class SqliteSignalStore:
         return [dict(r) for r in rows]
 
     def stats(self) -> dict:
+        since = float(self.get_meta("stats_since") or 0.0)  # UI-only cutoff
         with self._lock:
-            total = self._conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
-            wins = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE result='WIN'").fetchone()[0]
-            losses = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE result='LOSS'").fetchone()[0]
-            pending = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE result IS NULL").fetchone()[0]
+            total = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE created_at>=?", (since,)).fetchone()[0]
+            wins = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE result='WIN' AND created_at>=?", (since,)).fetchone()[0]
+            losses = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE result='LOSS' AND created_at>=?", (since,)).fetchone()[0]
+            pending = self._conn.execute("SELECT COUNT(*) FROM predictions WHERE result IS NULL AND created_at>=?", (since,)).fetchone()[0]
             by_asset = self._conn.execute(
                 """SELECT asset, SUM(result='WIN') AS wins, SUM(result='LOSS') AS losses,
                           SUM(result IS NULL) AS pending
-                   FROM predictions GROUP BY asset ORDER BY (wins+losses) DESC"""
+                   FROM predictions WHERE created_at>=? GROUP BY asset ORDER BY (wins+losses) DESC""", (since,)
             ).fetchall()
             by_expiry = self._conn.execute(
                 """SELECT expiry_s, SUM(result='WIN') AS wins, SUM(result='LOSS') AS losses
-                   FROM predictions GROUP BY expiry_s ORDER BY expiry_s"""
+                   FROM predictions WHERE created_at>=? GROUP BY expiry_s ORDER BY expiry_s""", (since,)
             ).fetchall()
             settled_rows = self._conn.execute(
-                "SELECT result FROM predictions WHERE result IS NOT NULL ORDER BY result_at"
+                "SELECT result FROM predictions WHERE result IS NOT NULL AND created_at>=? ORDER BY result_at", (since,)
             ).fetchall()
         results = [r["result"] for r in settled_rows]
-        return _build_stats(total, wins, losses, pending,
-                            [dict(r) for r in by_asset], [dict(r) for r in by_expiry], results)
+        out = _build_stats(total, wins, losses, pending,
+                           [dict(r) for r in by_asset], [dict(r) for r in by_expiry], results)
+        out["display_reset_at"] = since or None
+        out["note_reset"] = ("Counter was reset for display; all underlying data is kept and "
+                             "still used for learning." if since else "")
+        return out
 
 
 # ----------------------------------------------------------------------
@@ -177,6 +229,8 @@ class PostgresSignalStore:
         self._conn = psycopg.connect(dsn, autocommit=True)
         with self._conn.cursor() as cur:
             cur.execute(_PG_SCHEMA)
+            cur.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+            cur.execute("ALTER TABLE predictions ADD COLUMN IF NOT EXISTS analysis_json TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -185,6 +239,38 @@ class PostgresSignalStore:
     def _reconnect_if_needed(self):
         if self._conn.closed:
             self._conn = self._psycopg.connect(self._conn.info.dsn, autocommit=True)
+
+    def get_meta(self, key: str) -> Optional[str]:
+        rows = self._fetch_dicts("SELECT value FROM meta WHERE key=%s", (key,))
+        return rows[0]["value"] if rows else None
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self._lock:
+            self._reconnect_if_needed()
+            with self._conn.cursor() as cur:
+                cur.execute("INSERT INTO meta(key,value) VALUES(%s,%s) "
+                            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value", (key, str(value)))
+
+    def set_analysis(self, signal_id: str, analysis: dict) -> None:
+        with self._lock:
+            self._reconnect_if_needed()
+            with self._conn.cursor() as cur:
+                cur.execute("UPDATE predictions SET analysis_json=%s WHERE signal_id=%s",
+                            (json.dumps(analysis), signal_id))
+
+    def all_for_training(self) -> List[dict]:
+        return self._fetch_dicts("SELECT * FROM predictions ORDER BY created_at")
+
+    def losses_for_analysis(self, limit: int = 500) -> List[dict]:
+        return self._fetch_dicts(
+            "SELECT * FROM predictions WHERE result='LOSS' ORDER BY result_at DESC LIMIT %s", (limit,))
+
+    def reset_display(self) -> int:
+        now = time.time()
+        hidden = self._fetch_dicts(
+            "SELECT COUNT(*) AS n FROM predictions WHERE created_at < %s", (now,))[0]["n"]
+        self.set_meta("stats_since", now)
+        return int(hidden)
 
     def record_prediction(self, **kw) -> str:
         row = _new_row(**kw)
@@ -235,29 +321,34 @@ class PostgresSignalStore:
             "SELECT * FROM predictions ORDER BY created_at DESC LIMIT %s", (limit,))
 
     def stats(self) -> dict:
+        since = float(self.get_meta("stats_since") or 0.0)  # UI-only cutoff
         agg = self._fetch_dicts(
             """SELECT COUNT(*) AS total,
                       COUNT(*) FILTER (WHERE result='WIN') AS wins,
                       COUNT(*) FILTER (WHERE result='LOSS') AS losses,
                       COUNT(*) FILTER (WHERE result IS NULL) AS pending
-               FROM predictions""")[0]
+               FROM predictions WHERE created_at>=%s""", (since,))[0]
         by_asset = self._fetch_dicts(
             """SELECT asset,
                       COUNT(*) FILTER (WHERE result='WIN') AS wins,
                       COUNT(*) FILTER (WHERE result='LOSS') AS losses,
                       COUNT(*) FILTER (WHERE result IS NULL) AS pending
-               FROM predictions GROUP BY asset
+               FROM predictions WHERE created_at>=%s GROUP BY asset
                ORDER BY (COUNT(*) FILTER (WHERE result='WIN')
-                         + COUNT(*) FILTER (WHERE result='LOSS')) DESC""")
+                         + COUNT(*) FILTER (WHERE result='LOSS')) DESC""", (since,))
         by_expiry = self._fetch_dicts(
             """SELECT expiry_s,
                       COUNT(*) FILTER (WHERE result='WIN') AS wins,
                       COUNT(*) FILTER (WHERE result='LOSS') AS losses
-               FROM predictions GROUP BY expiry_s ORDER BY expiry_s""")
+               FROM predictions WHERE created_at>=%s GROUP BY expiry_s ORDER BY expiry_s""", (since,))
         settled = self._fetch_dicts(
-            "SELECT result FROM predictions WHERE result IS NOT NULL ORDER BY result_at")
-        return _build_stats(agg["total"], agg["wins"], agg["losses"], agg["pending"],
-                            by_asset, by_expiry, [r["result"] for r in settled])
+            "SELECT result FROM predictions WHERE result IS NOT NULL AND created_at>=%s ORDER BY result_at", (since,))
+        out = _build_stats(agg["total"], agg["wins"], agg["losses"], agg["pending"],
+                           by_asset, by_expiry, [r["result"] for r in settled])
+        out["display_reset_at"] = since or None
+        out["note_reset"] = ("Counter was reset for display; all underlying data is kept and "
+                             "still used for learning." if since else "")
+        return out
 
 
 # ----------------------------------------------------------------------

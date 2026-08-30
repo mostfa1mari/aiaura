@@ -101,6 +101,11 @@
         $("mNote").textContent = m.note;
         if (m.drift){ const d=m.drift; const cls = d.status==="drift"?"bad":(d.status==="ok"?"ok":"warn");
           $("mDrift").innerHTML = `<span class="pill ${cls}">drift: ${d.status}</span>`; }
+        if (m.auto_learner){ const a=m.auto_learner;
+          const when = a.last_train_at ? new Date(a.last_train_at*1000).toLocaleString() : "—";
+          const last = a.last_result ? (a.last_result.status + (a.last_result.promoted?" · PROMOTED":"")) : "—";
+          $("mNote").innerHTML = m.note + `<br><br><strong>Auto-learning:</strong> running · cycles ${a.cycles} · last ${when} · ${last}`;
+        }
         if (m.champion && m.champion.metrics){ $("mMetrics").innerHTML = "<pre>"+JSON.stringify(m.champion.metrics,null,2)+"</pre>"; }
       } catch(e){ $("mNote").textContent = "Model info unavailable — "+e.message; }
 
@@ -110,7 +115,7 @@
       } catch(e){ $("health").textContent = "—"; }
     }
     document.getElementById("resetBtn").addEventListener("click", async () => {
-      if (!confirm("Clear all signals, wins and losses? This cannot be undone.")) return;
+      if (!confirm("Reset the visible counters? Your data is KEPT and the model keeps learning from it.")) return;
       const btn = document.getElementById("resetBtn"), msg = document.getElementById("resetMsg");
       btn.disabled = true; msg.textContent = " resetting…";
       try {
@@ -118,7 +123,7 @@
           { method: "POST", headers: token ? { Authorization: "Bearer " + token } : {} });
         const b = await r.json();
         if (!r.ok) throw new Error(b.detail || r.status);
-        msg.textContent = ` cleared ${b.removed}`;
+        msg.textContent = ` counter reset (${b.hidden} kept for learning)`;
         load();
       } catch (e) { msg.textContent = " failed: " + e.message; }
       finally { btn.disabled = false; }
