@@ -35,7 +35,8 @@ class AutoLearnConfig:
     interval_s: float = 1800.0        # base retrain cadence (30 min)
     warmup_delay_s: float = 120.0     # wait after startup before the first cycle
     pages: int = 8                    # candle history depth per target
-    drift_interval_s: float = 300.0   # how often to check live drift
+    drift_interval_s: float = 60.0    # how often to check drift + loss trigger
+    loss_trigger: int = 12            # retrain after this many NEW losses (10-15)
 
 
 class AutoLearner:
@@ -75,20 +76,37 @@ class AutoLearner:
             except Exception as exc:
                 logger.warning("auto-learn cycle failed: %s", exc)
 
-            # Between full cycles, poll for drift; retrain early if it degrades.
+            # Between full cycles, poll for (a) enough new losses to learn from,
+            # and (b) performance drift — retrain early on either.
             elapsed = 0.0
             while elapsed < self._cfg.interval_s and not self._stop.is_set():
                 if self._stop.wait(self._cfg.drift_interval_s):
                     return
                 elapsed += self._cfg.drift_interval_s
-                if time.time() - last_drift_check >= self._cfg.drift_interval_s:
+                reason = None
+                if self._losses_trigger():
+                    reason = "losses"
+                elif time.time() - last_drift_check >= self._cfg.drift_interval_s:
                     last_drift_check = time.time()
                     if self._drift_says_retrain():
-                        try:
-                            self._cycle(reason="drift")
-                        except Exception as exc:
-                            logger.warning("drift-triggered cycle failed: %s", exc)
-                        break  # restart the outer cadence after a drift retrain
+                        reason = "drift"
+                if reason:
+                    try:
+                        self._cycle(reason=reason)
+                    except Exception as exc:
+                        logger.warning("%s-triggered cycle failed: %s", reason, exc)
+                    break  # restart the outer cadence after an early retrain
+
+    def _losses_trigger(self) -> bool:
+        """Fire after loss_trigger NEW losses since the last training cycle."""
+        if self._store is None:
+            return False
+        try:
+            total = self._store.total_losses()
+            last = int(self._store.get_meta("trained_at_loss_count") or 0)
+        except Exception:
+            return False
+        return (total - last) >= self._cfg.loss_trigger
 
     def _drift_says_retrain(self) -> bool:
         rec = self._registry.champion_record()
@@ -128,7 +146,13 @@ class AutoLearner:
             self.cycles += 1
             if self._store is not None:
                 self._store.set_meta("last_auto_train", str(self.last_train_at))
-            logger.info("auto-learn (%s) %s/%ss: %s", reason, asset, expiry, res.get("status"))
+                # reset the loss counter baseline so the next trigger is "new" losses
+                try:
+                    self._store.set_meta("trained_at_loss_count", str(self._store.total_losses()))
+                except Exception:
+                    pass
+            logger.info("auto-learn (%s) %s/%ss: %s v=%s promoted=%s", reason, asset, expiry,
+                        res.get("status"), res.get("version"), res.get("promoted"))
             if res.get("status") == "trained" and res.get("promoted"):
                 logger.info("auto-learner promoted champion %s", res.get("version"))
                 self._on_promote(res["version"])

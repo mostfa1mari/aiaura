@@ -103,8 +103,12 @@
           $("mDrift").innerHTML = `<span class="pill ${cls}">drift: ${d.status}</span>`; }
         if (m.auto_learner){ const a=m.auto_learner;
           const when = a.last_train_at ? new Date(a.last_train_at*1000).toLocaleString() : "—";
-          const last = a.last_result ? (a.last_result.status + (a.last_result.promoted?" · PROMOTED":"")) : "—";
-          $("mNote").innerHTML = m.note + `<br><br><strong>Auto-learning:</strong> running · cycles ${a.cycles} · last ${when} · ${last}`;
+          const lr = a.last_result;
+          let last = "—";
+          if (lr){ last = lr.status + (lr.version?` v=${lr.version}`:"") +
+            (lr.promoted?` · PROMOTED (${lr.promotion_level})`:` · challenger (not deployed)`) +
+            (lr.reason?` · trigger=${lr.reason}`:""); }
+          $("mNote").innerHTML = m.note + `<br><br><strong>Auto-learning:</strong> running · cycles ${a.cycles} · last ${when}<br>${last}`;
         }
         if (m.champion && m.champion.metrics){ $("mMetrics").innerHTML = "<pre>"+JSON.stringify(m.champion.metrics,null,2)+"</pre>"; }
       } catch(e){ $("mNote").textContent = "Model info unavailable — "+e.message; }

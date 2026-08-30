@@ -10,6 +10,7 @@ the app is allowed to "learn" without ever fabricating an edge.
 from __future__ import annotations
 
 import math
+import re
 import time
 from typing import Dict, Optional, Sequence
 
@@ -22,6 +23,39 @@ from services.market_data.provider import CanonicalCandle
 MIN_ROWS = 400               # refuse to "learn" from too little data
 PROMOTE_P_VALUE = 0.01       # strict: held-out significance vs break-even
 PROMOTE_MARGIN = 0.02        # must beat the champion by a real margin, not noise
+
+# Version-bump thresholds (how much stronger the proven edge must be).
+_MAJOR_DELTA = 0.10          # big expectancy gain -> "stronger model" (X+1.0.0)
+_MAJOR_P = 0.001             # ...with strong significance
+_MAJOR_EFF_N = 200           # ...on a large effective sample
+_MINOR_DELTA = 0.03          # meaningful gain -> minor bump (x.Y+1.0)
+_SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+
+
+def _bump_semver(current: str, level: str) -> str:
+    m = _SEMVER.match(current or "") or _SEMVER.match("1.0.0")
+    a, b, c = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    if level == "major":
+        return f"{a + 1}.0.0"
+    if level == "minor":
+        return f"{a}.{b + 1}.0"
+    return f"{a}.{b}.{c + 1}"
+
+
+def _promotion_level(new_metrics: dict, champion: Optional[ModelRecord]) -> str:
+    """How big is the proven improvement? major = strong change + strong tests;
+    minor = meaningful; patch = small but real."""
+    if champion is None:
+        return "initial"
+    delta = ((new_metrics.get("oos_expectancy", 0) or 0)
+             - ((champion.metrics or {}).get("oos_expectancy", 0) or 0))
+    p = new_metrics.get("p_value_one_sided", 1.0)
+    eff = new_metrics.get("effective_n", 0) or 0
+    if delta >= _MAJOR_DELTA and p is not None and p < _MAJOR_P and eff >= _MAJOR_EFF_N:
+        return "major"
+    if delta >= _MINOR_DELTA:
+        return "minor"
+    return "patch"
 
 
 def _is_promotable(new_metrics: dict, champion: Optional[ModelRecord]) -> bool:
@@ -70,7 +104,19 @@ def run_training_cycle(
     champion = registry.champion_record()
     promote = _is_promotable(outcome.metrics, champion)
 
-    version = registry.new_version()
+    # Versioning: a PROMOTED model gets a semantic version reflecting how much
+    # stronger the proven edge is (initial=1.0.0, patch=small, minor=meaningful,
+    # major=strong change + strong tests). A challenger that doesn't clear the
+    # gate is recorded as a "-rc" candidate but never becomes the version the
+    # app serves — a new number only when it is genuinely better.
+    level = _promotion_level(outcome.metrics, champion)
+    if promote:
+        prev = champion.version if (champion and _SEMVER.match(champion.version or "")) else "1.0.0"
+        version = "1.0.0" if champion is None else _bump_semver(prev, level)
+    else:
+        version = f"{registry.new_version()}-rc"
+    outcome.metrics["promotion_level"] = level if promote else "challenger"
+
     record = ModelRecord(
         version=version,
         feature_version=outcome.metrics.get("feature_version", "features-1.0.0"),
@@ -80,7 +126,8 @@ def run_training_cycle(
         n_train=outcome.n_train,
         n_test=outcome.n_test,
         metrics=outcome.metrics,
-        notes="promoted to champion" if promote else "kept as challenger (not deployed)",
+        notes=(f"promoted to champion ({level})" if promote
+               else "kept as challenger (no significant edge over champion/break-even)"),
     )
     registry.save(outcome.model, record, make_champion=promote)
     return {
@@ -88,6 +135,7 @@ def run_training_cycle(
         "version": version,
         "kind": outcome.kind,
         "promoted": promote,
+        "promotion_level": level if promote else "challenger",
         "champion": registry.champion_version,
         "metrics": outcome.metrics,
     }

@@ -5,7 +5,9 @@ import random
 from services.learning_engine.dataset import DatasetRow, build_dataset
 from services.learning_engine.registry import ModelRecord, ModelRegistry
 from services.learning_engine.self_learning import (
+    _bump_semver,
     _is_promotable,
+    _promotion_level,
     detect_drift,
     run_training_cycle,
 )
@@ -104,6 +106,50 @@ def test_self_learning_cycle_is_honest_on_noise(tmp_path):
     if res["status"] == "trained":
         assert res["promoted"] is False       # random walk -> no edge -> not deployed
         assert reg.champion_version is None    # nothing deployed
+
+
+def test_semver_bump():
+    assert _bump_semver("1.0.4", "patch") == "1.0.5"
+    assert _bump_semver("1.0.4", "minor") == "1.1.0"
+    assert _bump_semver("1.2.3", "major") == "2.0.0"
+    assert _bump_semver("not-semver", "patch") == "1.0.1"  # safe default
+
+
+def test_promotion_level_reflects_improvement_size():
+    assert _promotion_level({"oos_expectancy": 0.2}, None) == "initial"
+    champ = ModelRecord("c", "fv", "k", 1.0, [0, 1], 100, 20, {"oos_expectancy": 0.10})
+    # big gain + strong significance + large sample -> stronger model (major)
+    assert _promotion_level(
+        {"oos_expectancy": 0.22, "p_value_one_sided": 0.0005, "effective_n": 300}, champ) == "major"
+    # meaningful gain -> minor
+    assert _promotion_level(
+        {"oos_expectancy": 0.15, "p_value_one_sided": 0.005, "effective_n": 120}, champ) == "minor"
+    # small but real gain -> patch (e.g. 1.0.4 -> 1.0.5)
+    assert _promotion_level(
+        {"oos_expectancy": 0.115, "p_value_one_sided": 0.005, "effective_n": 120}, champ) == "patch"
+    # big delta but weak significance -> NOT major (only minor)
+    assert _promotion_level(
+        {"oos_expectancy": 0.25, "p_value_one_sided": 0.02, "effective_n": 300}, champ) == "minor"
+
+
+def test_loss_trigger_fires_after_threshold(tmp_path):
+    from services.learning_engine.auto import AutoLearnConfig, AutoLearner
+    from services.signal_engine.store import SqliteSignalStore
+
+    store = SqliteSignalStore(tmp_path / "lt.db")
+    al = AutoLearner(provider=None, store=store, registry_dir=tmp_path / "models",
+                     on_promote=lambda v: None, config=AutoLearnConfig(loss_trigger=12))
+    assert al._losses_trigger() is False
+    for i in range(12):
+        sid = store.record_prediction(
+            asset="EURUSD_otc", expiry_s=60, signal="BUY", score=0.1, strength=0.1,
+            agreement=0.5, regime="r", data_sufficiency=1.0, entry_price=1.1,
+            market_ts=1.0, prediction_latency_ms=1.0, model_version="v", context={})
+        store.record_result(sid, "LOSS")
+    assert store.total_losses() == 12
+    assert al._losses_trigger() is True                 # 12 new losses -> retrain
+    store.set_meta("trained_at_loss_count", "12")        # after a cycle
+    assert al._losses_trigger() is False                 # reset baseline
 
 
 def test_detect_drift():

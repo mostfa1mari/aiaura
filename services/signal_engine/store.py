@@ -114,6 +114,12 @@ class SqliteSignalStore:
                 (limit,)).fetchall()
         return [dict(r) for r in rows]
 
+    def total_losses(self) -> int:
+        """ALL settled losses, ignoring any UI reset (for the learning trigger)."""
+        with self._lock:
+            return int(self._conn.execute(
+                "SELECT COUNT(*) FROM predictions WHERE result='LOSS'").fetchone()[0])
+
     def record_prediction(self, **kw) -> str:
         row = _new_row(**kw)
         with self._lock:
@@ -264,6 +270,10 @@ class PostgresSignalStore:
     def losses_for_analysis(self, limit: int = 500) -> List[dict]:
         return self._fetch_dicts(
             "SELECT * FROM predictions WHERE result='LOSS' ORDER BY result_at DESC LIMIT %s", (limit,))
+
+    def total_losses(self) -> int:
+        return int(self._fetch_dicts(
+            "SELECT COUNT(*) AS n FROM predictions WHERE result='LOSS'")[0]["n"])
 
     def reset_display(self) -> int:
         now = time.time()
