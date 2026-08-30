@@ -36,7 +36,10 @@ class AutoLearnConfig:
     warmup_delay_s: float = 120.0     # wait after startup before the first cycle
     pages: int = 8                    # candle history depth per target
     drift_interval_s: float = 60.0    # how often to check drift + loss trigger
-    loss_trigger: int = 12            # retrain after this many NEW losses (10-15)
+    # Retrain after this many NEW losses. Lower = faster adaptation to regime
+    # changes, but MORE frequent tests -> higher cumulative false-promotion risk
+    # (the strict gate still guards each cycle). Owner set this to 5.
+    loss_trigger: int = 5
 
 
 class AutoLearner:

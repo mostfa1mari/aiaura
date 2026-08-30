@@ -130,6 +130,8 @@ async def lifespan(_app: FastAPI):
                 cfg.warmup_delay_s = float(os.environ["AIAURA_AUTOLEARN_WARMUP"])
             if os.environ.get("AIAURA_AUTOLEARN_INTERVAL"):
                 cfg.interval_s = float(os.environ["AIAURA_AUTOLEARN_INTERVAL"])
+            if os.environ.get("AIAURA_AUTOLEARN_LOSS_TRIGGER"):
+                cfg.loss_trigger = int(os.environ["AIAURA_AUTOLEARN_LOSS_TRIGGER"])
             state.auto_learner = AutoLearner(
                 provider, state.store, PROJECT_ROOT / "models", _on_promote, cfg)
             state.auto_learner.start()
