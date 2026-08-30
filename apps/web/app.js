@@ -238,6 +238,10 @@ function showResult(r) {
   $("mSuff").textContent = Math.round(r.data_sufficiency * 100) + "%";
   $("mEntry").textContent = r.entry_price != null ? r.entry_price : "—";
   $("mPayout").textContent = r.payout != null ? r.payout + "%" : "—";
+  const sim = r.historical_similarity;
+  $("mSim").textContent = sim ? `${sim.leans} ${Math.round(sim.directional_rate * 100)}% · ${sim.n_neighbors}${sim.confident ? "" : " ~"}` : "—";
+  const lv = r.latency_viability;
+  $("mLatV").textContent = lv ? lv.verdict.replace(/_/g, " ") : "—";
   $("mLatency").textContent = r.prediction_latency_ms != null ? Math.round(r.prediction_latency_ms) + " ms" : "—";
   $("mModel").textContent = r.model_version || "—";
 

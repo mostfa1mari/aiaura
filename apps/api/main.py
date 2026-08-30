@@ -29,8 +29,13 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from services.feature_engine import compute_features
+from services.latency import assess as assess_latency
+from services.learning_engine.dataset import build_dataset
 from services.learning_engine.registry import ModelRegistry
 from services.market_data.pocket_option_provider import PocketOptionMarketDataProvider
+from services.similarity import HistoricalSimilarity
+from services.strategies import ensemble as strategy_ensemble
 from services.market_data.security import MissingCredentialError, load_ssid, setup_logging
 from services.market_data.storage import TickStore
 from services.signal_engine import BASELINE_VERSION, generate_signal
@@ -255,6 +260,29 @@ def analyze(req: AnalyzeRequest):
     info = provider.get_assets().get(asset)
     payout = info.payout if info else None
 
+    # Secondary, advisory context: strategy-ensemble agreement, historical
+    # similarity, and short-horizon latency viability. All no-look-ahead.
+    strategies = similarity = latency_viability = None
+    try:
+        closed = [c for c in candles if c.complete]
+        fv = compute_features(closed, timeframe_s=timeframe)
+        ens = strategy_ensemble(fv.values)
+        strategies = {"signal": ens.signal, "agreement": round(ens.agreement, 3),
+                      "contributors": ens.contributors}
+        window = closed[-400:]
+        rows, names = build_dataset(window, horizon_s=float(req.expiry_s), warmup=50)
+        if len(rows) >= 40:
+            sim = HistoricalSimilarity([(r.timestamp, r.features, r.label) for r in rows])
+            sr = sim.query(fv.as_row(names), k=30, as_of=fv.at_timestamp)
+            similarity = {"directional_rate": round(sr.directional_rate, 3),
+                          "leans": sr.leans, "n_neighbors": sr.n_neighbors,
+                          "confident": sr.confident}
+        tick_age = max(0.0, tick.latency_ms) if tick else 0.0
+        lv = assess_latency(latency_ms, float(req.expiry_s), tick_age_ms=tick_age)
+        latency_viability = {"verdict": lv.verdict, "fraction": lv.fraction_of_horizon}
+    except Exception:
+        logger.debug("secondary analysis failed", exc_info=True)
+
     context = {
         "sub_signals": [
             {"name": s.name, "direction": s.direction, "score": round(s.score, 4), "detail": s.detail}
@@ -288,6 +316,9 @@ def analyze(req: AnalyzeRequest):
         "model_version": result.model_version,
         "note": result.note,
         "sub_signals": context["sub_signals"],
+        "strategies": strategies,
+        "historical_similarity": similarity,
+        "latency_viability": latency_viability,
         "created_at": time.time(),
     }
 
