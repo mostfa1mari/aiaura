@@ -44,6 +44,8 @@
       <div class="kpi"><div class="v" id="kStreak">—</div><div class="k">max loss streak</div></div>
     </div>
     <p class="muted" id="disc" style="margin-top:12px"></p>
+    <button id="resetBtn" type="button" style="margin-top:12px;background:rgba(234,57,67,.12);color:var(--sell);border:1px solid rgba(234,57,67,.4);border-radius:10px;padding:10px 14px;font-family:inherit;font-weight:700;font-size:13px">Reset counters</button>
+    <span id="resetMsg" class="muted"></span>
   </div>
 
   <div class="card">
@@ -107,6 +109,20 @@
         $("health").textContent = `connection ${h.status||"?"} · ${h.ticks_received||0} ticks received · store ${h.store||"?"} · reconnects ${h.reconnects||0}`;
       } catch(e){ $("health").textContent = "—"; }
     }
+    document.getElementById("resetBtn").addEventListener("click", async () => {
+      if (!confirm("Clear all signals, wins and losses? This cannot be undone.")) return;
+      const btn = document.getElementById("resetBtn"), msg = document.getElementById("resetMsg");
+      btn.disabled = true; msg.textContent = " resetting…";
+      try {
+        const r = await fetch((base ? base.replace(/\/$/,'') : "") + "/api/reset",
+          { method: "POST", headers: token ? { Authorization: "Bearer " + token } : {} });
+        const b = await r.json();
+        if (!r.ok) throw new Error(b.detail || r.status);
+        msg.textContent = ` cleared ${b.removed}`;
+        load();
+      } catch (e) { msg.textContent = " failed: " + e.message; }
+      finally { btn.disabled = false; }
+    });
     load();
   </script>
 </body>

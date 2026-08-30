@@ -97,6 +97,14 @@ class SqliteSignalStore:
             self._conn.commit()
             return cur.rowcount > 0
 
+    def reset(self) -> int:
+        """Delete all predictions/outcomes. Returns the number removed."""
+        with self._lock:
+            n = self._conn.execute("SELECT COUNT(*) FROM predictions").fetchone()[0]
+            self._conn.execute("DELETE FROM predictions")
+            self._conn.commit()
+        return int(n)
+
     def get_prediction(self, signal_id: str) -> Optional[dict]:
         with self._lock:
             row = self._conn.execute(
@@ -208,6 +216,15 @@ class PostgresSignalStore:
                 cur.execute(sql, params)
                 cols = [d[0] for d in cur.description]
                 return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    def reset(self) -> int:
+        with self._lock:
+            self._reconnect_if_needed()
+            with self._conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM predictions")
+                n = cur.fetchone()[0]
+                cur.execute("DELETE FROM predictions")
+        return int(n)
 
     def get_prediction(self, signal_id: str) -> Optional[dict]:
         rows = self._fetch_dicts("SELECT * FROM predictions WHERE signal_id=%s", (signal_id,))

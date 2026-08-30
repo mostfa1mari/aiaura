@@ -183,8 +183,19 @@ def generate_signal(candles: Sequence[CanonicalCandle], timeframe_s: int) -> Sig
 
     side = 1 if signal == "BUY" else -1
     non_neutral = [s for s in subs if s.direction != 0]
-    agreement = (sum(1 for s in non_neutral if s.direction == side) / len(non_neutral)
-                 if non_neutral else 0.0)
+    agree = [s for s in non_neutral if s.direction == side]
+    agreement = (len(agree) / len(non_neutral)) if non_neutral else 0.0
+
+    # Conviction (strength), computed honestly:
+    #   strength = agreement × scaled average magnitude of the AGREEING signals.
+    # Averaging the raw signed scores of ALL sub-signals (the old |score|)
+    # understated conviction — neutral/opposing signals diluted it toward 0, so
+    # a genuine, aligned signal still read as a tiny percentage. This measures
+    # how many sub-signals point the same way AND how strongly, without
+    # inflating a weak or mixed signal (disagreement → low strength). It is a
+    # relative conviction score in [0,1], NOT a win probability.
+    avg_mag = (sum(abs(s.score) for s in agree) / len(agree)) if agree else 0.0
+    strength = _clip(agreement * min(1.0, avg_mag * 2.0), 0.0, 1.0)
 
     regime = _regime(closes, vol)
 
@@ -196,7 +207,7 @@ def generate_signal(candles: Sequence[CanonicalCandle], timeframe_s: int) -> Sig
     return SignalResult(
         signal=signal,
         score=score,
-        strength=abs(score),
+        strength=strength,
         agreement=agreement,
         regime=regime,
         data_sufficiency=sufficiency,

@@ -343,6 +343,15 @@ def stats():
     return state.store.stats()
 
 
+@app.post("/api/reset", dependencies=[Depends(require_token)])
+def reset_stats():
+    """Clear all recorded predictions and WIN/LOSS outcomes (counters -> 0)."""
+    if state.store is None:
+        raise HTTPException(status_code=503, detail="store unavailable")
+    removed = state.store.reset()
+    return {"ok": True, "removed": removed}
+
+
 @app.get("/api/model", dependencies=[Depends(require_token)])
 def model_info():
     from dataclasses import asdict
