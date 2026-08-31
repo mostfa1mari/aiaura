@@ -304,7 +304,11 @@ def _start_collection(provider: PocketOptionMarketDataProvider) -> list:
                 assets = list(_COLLECT_DEFAULT)
         else:
             assets = list(_COLLECT_DEFAULT)
-        cap = int(os.environ.get("AIAURA_COLLECT_MAX", "40"))
+        # Cap concurrent subscriptions: one PO connection gets unstable (stale
+        # streams, reconnects -> transient "insufficient data") with too many
+        # subfor streams. 15 keeps it warm and stable; the auto-learner fetches
+        # history for its targets on demand and does NOT need them subscribed.
+        cap = int(os.environ.get("AIAURA_COLLECT_MAX", "15"))
         assets = assets[:cap]
     else:
         assets = [a.strip() for a in mode.split(",") if a.strip()]
@@ -321,6 +325,29 @@ def _start_collection(provider: PocketOptionMarketDataProvider) -> list:
             logger.info("collect: skip %s (%s)", asset, exc)
     logger.info("collecting %d assets continuously: %s", len(ok), ok)
     return ok
+
+
+def _fetch_candles_resilient(provider, asset: str, timeframe: int,
+                             pages: int = 1, min_closed: int = 30, attempts: int = 3):
+    """Fetch history, retrying when a transient socket disruption (typically a
+    fresh change_symbol) returns empty/thin data. Returns whatever it has after
+    the last attempt; raises only if EVERY attempt raised and nothing came back."""
+    candles = []
+    last_exc = None
+    for attempt in range(attempts):
+        try:
+            candles = provider.get_historical_candles(asset, timeframe, pages=pages)
+            last_exc = None
+        except Exception as exc:
+            last_exc = exc
+            candles = []
+        if sum(1 for c in candles if getattr(c, "complete", False)) >= min_closed:
+            break
+        if attempt < attempts - 1:
+            time.sleep(0.7)  # let the stream settle, then retry
+    if last_exc is not None and not candles:
+        raise HTTPException(status_code=503, detail=f"history unavailable: {last_exc}")
+    return candles
 
 
 def _require_provider() -> PocketOptionMarketDataProvider:
@@ -398,7 +425,7 @@ def selftest(asset: str = DEFAULT_ASSET, expiry_s: int = 60):
                 out["subscribe_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         out["tick_present"] = provider.wait_for_first_tick(asset, timeout_s=8.0)
         try:
-            candles = provider.get_historical_candles(asset, tf, pages=1)
+            candles = _fetch_candles_resilient(provider, asset, tf)
             out["candles_returned"] = len(candles)
             closed = [c for c in candles if c.complete]
             out["closed_candles"] = len(closed)
@@ -455,10 +482,11 @@ def analyze(req: AnalyzeRequest):
             raise HTTPException(status_code=400, detail=f"cannot subscribe to {asset}: {exc}")
     provider.wait_for_first_tick(asset, timeout_s=10.0)
 
-    try:
-        candles = provider.get_historical_candles(asset, timeframe, pages=1)
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail=f"history unavailable: {exc}")
+    # A fresh subscribe (change_symbol) can briefly disrupt the socket, so the
+    # first history fetch sometimes returns empty/thin. Retry a few times, letting
+    # the stream settle, before giving up — this is the main cause of transient
+    # "insufficient data" when switching assets.
+    candles = _fetch_candles_resilient(provider, asset, timeframe)
 
     if state.ml_predictor is not None:
         result = state.ml_predictor.predict(candles, timeframe)
