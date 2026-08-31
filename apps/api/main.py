@@ -375,6 +375,44 @@ def expiries():
     return {"expiries": EXPIRIES}
 
 
+@app.get("/api/selftest")
+def selftest(asset: str = DEFAULT_ASSET, expiry_s: int = 60):
+    """Open diagnostic: reproduce the /analyze data fetch for one asset and report
+    what came back, so an 'insufficient data' can be diagnosed without a token.
+    Read-only, no sensitive data, no trades."""
+    out = {"asset": asset, "expiry_s": expiry_s, "build": BUILD_SHA}
+    if state.provider is None:
+        out["error"] = state.startup_error or "provider not started"
+        return out
+    provider = state.provider
+    tf = EXPIRY_TIMEFRAME.get(expiry_s, 15)
+    out["timeframe_s"] = tf
+    try:
+        out["subscribed_already"] = asset in state.subscribed
+        if asset not in state.subscribed:
+            try:
+                provider.subscribe(asset)
+                state.subscribed.add(asset)
+                out["subscribed_now"] = True
+            except Exception as exc:
+                out["subscribe_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        out["tick_present"] = provider.wait_for_first_tick(asset, timeout_s=8.0)
+        try:
+            candles = provider.get_historical_candles(asset, tf, pages=1)
+            out["candles_returned"] = len(candles)
+            closed = [c for c in candles if c.complete]
+            out["closed_candles"] = len(closed)
+            if closed:
+                sig = generate_signal(closed, tf)
+                out["regime"] = sig.regime
+                out["data_sufficiency"] = round(sig.data_sufficiency, 3)
+        except Exception as exc:
+            out["history_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    except Exception as exc:
+        out["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    return out
+
+
 @app.get("/api/assets", dependencies=[Depends(require_token)])
 def assets():
     provider = _require_provider()
