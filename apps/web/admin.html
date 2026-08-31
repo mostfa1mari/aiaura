@@ -32,6 +32,11 @@
     .pill.warn { background:rgba(245,166,35,.15); color:#f5c877; }
     .pill.bad { background:rgba(234,57,67,.15); color:var(--sell); }
     .muted { color:var(--faint); font-size:12px; line-height:1.5; }
+    .lossrow { padding:10px 0; border-bottom:1px solid var(--line); }
+    .lossrow:last-child { border-bottom:none; }
+    .lossk { font-size:12px; color:var(--dim); margin-bottom:4px; }
+    .lossv { font-size:14px; color:var(--text); }
+    .lossv b { color:var(--sell); font-weight:800; }
     pre { background:var(--elev2); border:1px solid var(--line); border-radius:10px; padding:12px; overflow:auto; font-size:12px; color:var(--dim); }
     .win { color:var(--buy); } .loss { color:var(--sell); }
   </style>
@@ -60,6 +65,12 @@
     <p>Active: <span class="pill" id="mActive">—</span> <span id="mDrift"></span></p>
     <div id="mMetrics"></div>
     <p class="muted" id="mNote"></p>
+  </div>
+
+  <div class="card">
+    <h2>Why losses happen</h2>
+    <p class="muted" id="lossIntro">—</p>
+    <div id="lossWhy"></div>
   </div>
 
   <div class="card">
@@ -126,6 +137,20 @@
         const h = await api("/api/health");
         $("health").textContent = `connection ${h.status||"?"} · ${h.ticks_received||0} ticks received · store ${h.store||"?"} · reconnects ${h.reconnects||0}`;
       } catch(e){ $("health").textContent = "—"; }
+
+      try {
+        const L = await api("/api/losses");
+        const el = $("lossWhy");
+        if (!L.n_losses){ $("lossIntro").textContent = "No losses recorded yet — report a few outcomes and the pattern shows up here."; el.innerHTML=""; }
+        else {
+          const fmt = (arr) => (arr||[]).map(([n,c]) => `${String(n).replace(/_/g,' ')} <b>×${c}</b>`).join(" · ") || "—";
+          $("lossIntro").textContent = `Analysed ${L.n_losses} losses. ${L.note||""}`;
+          el.innerHTML =
+            `<div class="lossrow"><div class="lossk">Signals that misled most (pushed the wrong way)</div><div class="lossv">${fmt(L.most_misleading_strategies)}</div></div>`+
+            `<div class="lossrow"><div class="lossk">Market conditions with the most losses</div><div class="lossv">${fmt(L.losses_by_regime)}</div></div>`+
+            `<div class="lossrow"><div class="lossk">High-conviction losses (worst — model was sure and wrong)</div><div class="lossv"><b>${L.high_conviction_losses||0}</b></div></div>`;
+        }
+      } catch(e){ $("lossIntro").textContent = "Loss analysis unavailable — "+e.message; }
     }
     document.getElementById("resetBtn").addEventListener("click", async () => {
       if (!confirm("Reset the visible counters? Your data is KEPT and the model keeps learning from it.")) return;
