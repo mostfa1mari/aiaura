@@ -60,16 +60,21 @@ async function loadExpiries() {
   const { expiries } = await api("/api/expiries");
   const box = $("expiryChips");
   box.innerHTML = "";
+  const saved = parseInt(cfgGet("aiaura_expiry"), 10);   // remembered choice
+  let selIdx = expiries.indexOf(saved);
+  if (selIdx < 0) selIdx = 0;                            // fall back to first if unset/gone
   expiries.forEach((s, i) => {
     const chip = document.createElement("button");
     chip.className = "chip"; chip.type = "button"; chip.setAttribute("role", "radio");
     chip.textContent = fmtExpiry(s);
-    chip.setAttribute("aria-checked", i === 0 ? "true" : "false");
-    if (i === 0) state.expiry = s;
+    const isSel = i === selIdx;
+    chip.setAttribute("aria-checked", isSel ? "true" : "false");
+    if (isSel) state.expiry = s;
     chip.addEventListener("click", () => {
       [...box.children].forEach((c) => c.setAttribute("aria-checked", "false"));
       chip.setAttribute("aria-checked", "true");
       state.expiry = s;
+      cfgSet("aiaura_expiry", String(s));               // persist across reloads/navigation
     });
     box.appendChild(chip);
   });
@@ -82,6 +87,7 @@ function updateAssetLabel(symbol) {
 }
 function setAsset(symbol) {
   state.asset = symbol;
+  cfgSet("aiaura_asset", symbol);          // remember choice across reloads/navigation
   updateAssetLabel(symbol);
   api("/api/subscribe", { method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ asset: symbol }) }).catch(() => {});
@@ -100,8 +106,11 @@ async function loadAssets() {
   try {
     const assets = await refreshAssets();
     if (assets.length && !state.asset) {
-      const eur = assets.find((a) => a.symbol === "EURUSD_otc");
-      setAsset(eur ? "EURUSD_otc" : assets[0].symbol);
+      const saved = cfgGet("aiaura_asset");
+      const has = (sym) => assets.some((a) => a.symbol === sym);
+      const pick = (saved && has(saved)) ? saved
+        : (has("EURUSD_otc") ? "EURUSD_otc" : assets[0].symbol);
+      setAsset(pick);
     }
   } catch (e) {
     $("analyzeBtn").disabled = true;
