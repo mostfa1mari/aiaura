@@ -193,14 +193,20 @@ async def lifespan(_app: FastAPI):
 
             from services.learning_engine.auto import AutoLearnConfig
             cfg = AutoLearnConfig()
-            # Train across the major OTC pairs (not EURUSD-only) at the common
-            # 60s expiry, so the model adapts for what the user actually trades.
-            # Override with AIAURA_AUTOLEARN_TARGETS="EURUSD_otc:60,GBPUSD_otc:15".
+            # By default, dynamically train EVERY high-payout (>=90% -> the "92%")
+            # pair from the live catalog at 60s, continuously. An explicit
+            # AIAURA_AUTOLEARN_TARGETS="EURUSD_otc:60,GBPUSD_otc:15" pins a static
+            # list instead. AIAURA_AUTOLEARN_PAYOUT_MIN tunes the threshold.
             tgt_env = os.environ.get("AIAURA_AUTOLEARN_TARGETS")
             if tgt_env:
-                cfg.targets = _parse_targets(tgt_env) or cfg.targets
+                parsed = _parse_targets(tgt_env)
+                if parsed:
+                    cfg.targets = parsed
+                    cfg.dynamic_high_payout = False
             else:
-                cfg.targets = [(a, 60) for a in _COLLECT_DEFAULT[:6]]
+                cfg.targets = [(a, 60) for a in _COLLECT_DEFAULT]  # static fallback
+            if os.environ.get("AIAURA_AUTOLEARN_PAYOUT_MIN"):
+                cfg.payout_threshold = float(os.environ["AIAURA_AUTOLEARN_PAYOUT_MIN"])
             if os.environ.get("AIAURA_AUTOLEARN_WARMUP"):
                 cfg.warmup_delay_s = float(os.environ["AIAURA_AUTOLEARN_WARMUP"])
             if os.environ.get("AIAURA_AUTOLEARN_INTERVAL"):
@@ -585,7 +591,10 @@ def model_info():
     if al is not None:
         auto = {"running": True, "cycles": al.cycles,
                 "last_train_at": al.last_train_at or None,
-                "last_result": al.last_result}
+                "last_result": al.last_result,
+                "targets": len(al.last_targets),
+                "payout_threshold": al._cfg.payout_threshold,
+                "dynamic": al._cfg.dynamic_high_payout}
     return {
         "using_ml": active,
         "active_model": rec.version if rec else BASELINE_VERSION,

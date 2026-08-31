@@ -114,8 +114,10 @@
           let last = "—";
           if (lr){ last = lr.status + (lr.version?` v=${lr.version}`:"") +
             (lr.promoted?` · PROMOTED (${lr.promotion_level})`:` · challenger (not deployed)`) +
+            (lr.targets_trained!=null?` · trained ${lr.targets_trained}/${lr.targets_total} pairs, promoted ${lr.promoted_count}`:"") +
             (lr.reason?` · trigger=${lr.reason}`:""); }
-          $("mNote").innerHTML = m.note + `<br><br><strong>Auto-learning:</strong> running · cycles ${a.cycles} · last ${when}<br>${last}`;
+          const scope = a.dynamic ? `${a.targets||0} high-payout pairs (≥${a.payout_threshold||90}%)` : `${a.targets||0} pairs`;
+          $("mNote").innerHTML = m.note + `<br><br><strong>Auto-learning:</strong> running · ${scope} · cycles ${a.cycles} · last ${when}<br>${last}`;
         }
         if (m.champion && m.champion.metrics){ $("mMetrics").innerHTML = "<pre>"+JSON.stringify(m.champion.metrics,null,2)+"</pre>"; }
       } catch(e){ $("mNote").textContent = "Model info unavailable — "+e.message; }

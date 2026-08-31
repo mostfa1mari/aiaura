@@ -32,7 +32,7 @@ EXPIRY_TIMEFRAME = {5: 5, 15: 5, 30: 10, 60: 15, 180: 30, 300: 60, 900: 60}
 @dataclass
 class AutoLearnConfig:
     targets: List[Tuple[str, int]] = field(default_factory=lambda: [("EURUSD_otc", 60)])
-    interval_s: float = 1800.0        # base retrain cadence (30 min)
+    interval_s: float = 900.0         # base retrain cadence (15 min) — near-continuous
     warmup_delay_s: float = 120.0     # wait after startup before the first cycle
     pages: int = 8                    # candle history depth per target
     drift_interval_s: float = 60.0    # how often to check drift + loss trigger
@@ -40,6 +40,13 @@ class AutoLearnConfig:
     # changes, but MORE frequent tests -> higher cumulative false-promotion risk
     # (the strict gate still guards each cycle). Owner set this to 5.
     loss_trigger: int = 5
+    # Dynamic targeting: each cycle, train every asset whose LIVE payout is at
+    # least `payout_threshold` (so "the 92% pairs") at each of `target_expiries`.
+    # Falls back to the static `targets` list if the catalog is unavailable.
+    dynamic_high_payout: bool = True
+    payout_threshold: float = 90.0
+    target_expiries: List[int] = field(default_factory=lambda: [60])
+    max_targets: int = 40             # safety cap on per-cycle training load
 
 
 class AutoLearner:
@@ -55,6 +62,7 @@ class AutoLearner:
         self.last_result: Optional[dict] = None
         self.last_train_at: float = 0.0
         self.cycles = 0
+        self.last_targets: List[Tuple[str, int]] = []
 
     def start(self) -> None:
         if self._thread is not None:
@@ -124,38 +132,89 @@ class AutoLearner:
         d = detect_drift(s["wins"], s["settled"], float(baseline))
         return d.get("status") == "drift"
 
+    def _current_targets(self) -> List[Tuple[str, int]]:
+        """The (asset, expiry) pairs to train THIS cycle. In dynamic mode, every
+        asset whose live payout >= threshold (the "92% pairs") at each configured
+        expiry; otherwise the static list. Falls back to static if the catalog
+        can't be read."""
+        if not self._cfg.dynamic_high_payout or self._provider is None:
+            return list(self._cfg.targets)
+        try:
+            assets = self._provider.get_assets()
+        except Exception:
+            return list(self._cfg.targets)
+        highs = sorted(
+            sym for sym, info in (assets or {}).items()
+            if getattr(info, "payout", None) and float(info.payout) >= self._cfg.payout_threshold)
+        if not highs:
+            return list(self._cfg.targets)
+        targets = [(sym, exp) for sym in highs for exp in self._cfg.target_expiries]
+        return targets[: self._cfg.max_targets]
+
     def _cycle(self, reason: str) -> None:
         if self._provider is None or not self._provider.is_connected():
             return
-        for asset, expiry in self._cfg.targets:
+        targets = self._current_targets()
+        self.last_targets = targets
+        results = []
+        promoted = None
+        for asset, expiry in targets:
+            if self._stop.is_set():
+                break
             timeframe = EXPIRY_TIMEFRAME.get(expiry, 15)
             try:
-                self._provider.subscribe(asset)
-            except Exception:
-                pass
-            self._provider.wait_for_first_tick(asset, timeout_s=8)
-            payout = 0.8
-            info = self._provider.get_assets().get(asset)
-            if info and info.payout:
-                payout = float(info.payout) / 100.0
-            candles = self._provider.get_historical_candles(asset, timeframe, pages=self._cfg.pages)
-            res = run_training_cycle(candles, horizon_s=float(expiry),
-                                     registry=self._registry, payout=payout)
+                try:
+                    self._provider.subscribe(asset)
+                except Exception:
+                    pass
+                self._provider.wait_for_first_tick(asset, timeout_s=8)
+                payout = 0.8
+                info = self._provider.get_assets().get(asset)
+                if info and info.payout:
+                    payout = float(info.payout) / 100.0
+                candles = self._provider.get_historical_candles(asset, timeframe, pages=self._cfg.pages)
+                res = run_training_cycle(candles, horizon_s=float(expiry),
+                                         registry=self._registry, payout=payout)
+            except Exception as exc:
+                logger.warning("auto-learn target %s/%ss failed: %s", asset, expiry, exc)
+                continue
             res["reason"] = reason
             res["asset"] = asset
             res["expiry_s"] = expiry
-            self.last_result = res
-            self.last_train_at = time.time()
-            self.cycles += 1
-            if self._store is not None:
-                self._store.set_meta("last_auto_train", str(self.last_train_at))
-                # reset the loss counter baseline so the next trigger is "new" losses
-                try:
-                    self._store.set_meta("trained_at_loss_count", str(self._store.total_losses()))
-                except Exception:
-                    pass
+            results.append(res)
             logger.info("auto-learn (%s) %s/%ss: %s v=%s promoted=%s", reason, asset, expiry,
                         res.get("status"), res.get("version"), res.get("promoted"))
             if res.get("status") == "trained" and res.get("promoted"):
-                logger.info("auto-learner promoted champion %s", res.get("version"))
+                promoted = res
+                logger.info("auto-learner promoted champion %s (%s)", res.get("version"), asset)
                 self._on_promote(res["version"])
+
+        if not results:
+            return
+        # One cycle = one full pass over all high-payout targets. Summarize it so
+        # the dashboard shows how many pairs were trained and whether any promoted.
+        self.cycles += 1
+        self.last_train_at = time.time()
+        self.last_result = promoted or _summarize(results, reason, len(targets))
+        if self._store is not None:
+            self._store.set_meta("last_auto_train", str(self.last_train_at))
+            try:  # reset the loss-trigger baseline so the next trigger is "new" losses
+                self._store.set_meta("trained_at_loss_count", str(self._store.total_losses()))
+            except Exception:
+                pass
+
+
+def _summarize(results: List[dict], reason: str, n_targets: int) -> dict:
+    """Roll a full training pass into one honest status: how many pairs trained,
+    how many promoted, and the strongest challenger this pass (so the dashboard
+    shows the model IS training even when nothing clears the strict gate)."""
+    trained = [r for r in results if r.get("status") == "trained"]
+    def _exp(r):
+        return (r.get("metrics") or {}).get("oos_expectancy", -9.0) or -9.0
+    best = max(trained, key=_exp, default=None)
+    summary = dict(best) if best else dict(results[-1])
+    summary["reason"] = reason
+    summary["targets_trained"] = len(trained)
+    summary["targets_total"] = n_targets
+    summary["promoted_count"] = sum(1 for r in results if r.get("promoted"))
+    return summary
