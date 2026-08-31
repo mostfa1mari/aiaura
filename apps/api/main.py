@@ -339,11 +339,25 @@ def health():
         return {"connected": False, "auth_required": auth_required, "build": BUILD_SHA,
                 "error": state.startup_error or "provider not started"}
     h = state.provider.health_check()
+    age = h.last_tick_age_s
+    # Data actually flowing = a live tick within the last 15s. A socket can be
+    # "connected" yet dead (PO stopped streaming, e.g. the SSID was invalidated
+    # by a concurrent login) — in that case ticks freeze and analyze can't get
+    # fresh data. Surface it plainly so it's diagnosable without guessing.
+    data_flowing = age is not None and age < 15.0
+    hint = ""
+    if h.connected and not data_flowing:
+        hint = ("Connected but receiving NO live data (stream stale). The Pocket "
+                "Option session likely expired or was invalidated by a concurrent "
+                "login — capture a fresh PO_SSID into the server env and redeploy.")
     return {
         "connected": h.connected,
         "auth_required": auth_required,
         "build": BUILD_SHA,
         "status": h.status,
+        "data_flowing": data_flowing,
+        "last_tick_age_s": round(age, 1) if age is not None else None,
+        "hint": hint,
         "time_synced": h.time_synced,
         "ticks_received": h.ticks_received,
         "subscribed": list(h.subscribed_assets),
