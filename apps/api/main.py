@@ -110,6 +110,21 @@ def get_calibrator() -> Optional[Calibrator]:
     return state._calibrator
 
 
+def _parse_targets(spec: str):
+    """Parse "EURUSD_otc:60,GBPUSD_otc:15" -> [("EURUSD_otc",60),("GBPUSD_otc",15)]."""
+    out = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            sym, exp = part.rsplit(":", 1)
+            out.append((sym.strip(), int(exp)))
+        except (ValueError, TypeError):
+            continue
+    return out
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # Store is always available (Postgres/Supabase if DATABASE_URL set, else
@@ -178,6 +193,14 @@ async def lifespan(_app: FastAPI):
 
             from services.learning_engine.auto import AutoLearnConfig
             cfg = AutoLearnConfig()
+            # Train across the major OTC pairs (not EURUSD-only) at the common
+            # 60s expiry, so the model adapts for what the user actually trades.
+            # Override with AIAURA_AUTOLEARN_TARGETS="EURUSD_otc:60,GBPUSD_otc:15".
+            tgt_env = os.environ.get("AIAURA_AUTOLEARN_TARGETS")
+            if tgt_env:
+                cfg.targets = _parse_targets(tgt_env) or cfg.targets
+            else:
+                cfg.targets = [(a, 60) for a in _COLLECT_DEFAULT[:6]]
             if os.environ.get("AIAURA_AUTOLEARN_WARMUP"):
                 cfg.warmup_delay_s = float(os.environ["AIAURA_AUTOLEARN_WARMUP"])
             if os.environ.get("AIAURA_AUTOLEARN_INTERVAL"):

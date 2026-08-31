@@ -210,63 +210,46 @@ function showResult(r, persist) {
   state.lastResult = r;
   if (persist) cfgSet("aiaura_last_signal", JSON.stringify(r));
   const card = $("resultCard");
-  card.classList.remove("hidden", "buy", "sell", "wait");
+  card.classList.remove("hidden", "buy", "sell", "wait", "explore");
   void card.offsetWidth;
 
-  const isWait = r.decision === "WAIT";
-  const isExplore = r.decision === "EXPLORATORY";
-  // A genuinely calibrated number only when the backend sent one AND we're not
-  // in the uncalibrated exploratory state.
-  const calibrated = r.confidence != null && !isExplore;
-  card.classList.add(isWait ? "wait" : (isExplore ? "explore" : (r.signal || "buy").toLowerCase()));
+  // Always a clear BUY/SELL (green/red). Confidence is shown honestly, never hides it.
+  const side = (r.signal || "BUY").toUpperCase();
+  card.classList.add(side.toLowerCase());
 
-  // Calibrated confidence is the headline (falls back to raw strength for
-  // old cached payloads that predate calibration).
   const conf = (r.confidence != null ? r.confidence : (r.strength || 0));
   const pct = Math.round(conf * 100);
   const be = r.break_even != null ? Math.round(r.break_even * 100) : null;
   const support = r.confidence_support || 0;
-  const lo = r.confidence_low != null ? Math.round(r.confidence_low * 100) : null;
-  const hi = r.confidence_high != null ? Math.round(r.confidence_high * 100) : null;
+  const tier = r.tier || "moderate";
+  const tierWord = tier === "strong" ? "Strong" : (tier === "low" ? "Low" : "Moderate");
 
-  // Guarded setters: tolerate a shell that predates these elements (e.g. a
-  // transient service-worker update window) instead of aborting the render.
   const setText = (id, txt) => { const el = $(id); if (el) el.textContent = txt; };
 
-  setText("signalBig", isWait ? "WAIT" : r.signal);
+  setText("signalBig", side);
   setText("signalAsset", shortSym(r.asset) + " OTC");
   setText("signalExpiry", fmtExpiry(r.expiry_s));
-  setText("meterLabel",
-    isWait ? "Confidence (below the bar)"
-    : isExplore ? "Direction (not yet calibrated)"
-    : calibrated ? "Confidence (calibrated)"
-    : "Conviction (uncalibrated)");
+  setText("meterLabel", `Win chance · ${tierWord}`);
   $("strengthBar").style.width = pct + "%"; setText("strengthVal", pct + "%");
 
-  // Confidence context: honest range + break-even + how much history backs it.
+  // One short, honest context line.
   const parts = [];
-  if (calibrated && lo != null && hi != null) parts.push(`range ${lo}–${hi}%`);
   if (be != null) parts.push(`needs ${be}% to profit`);
-  parts.push(support ? `${support} comparable past outcome${support === 1 ? "" : "s"}`
-                     : "no comparable history yet");
-  if (r.confidence_basis) parts.push(r.confidence_basis);
+  parts.push(support ? `${support} past outcome${support === 1 ? "" : "s"} for this asset`
+                     : "learning this asset — grade to improve");
   setText("confMeta", parts.join(" · "));
 
-  // Reasons: why WAIT, why exploring, or why this setup qualified.
   const rz = $("resultReasons");
   const reasons = Array.isArray(r.reasons) ? r.reasons : [];
   if (rz) {
     if (reasons.length) {
-      const head = isWait ? "<strong>Why wait:</strong> "
-        : isExplore ? "<strong>Exploratory:</strong> " : "";
-      rz.innerHTML = head + reasons.map((x) => `<span>${x}</span>`).join(isWait ? "<br>" : " ");
+      rz.innerHTML = reasons.map((x) => `<span>${x}</span>`).join(" ");
       rz.classList.remove("hidden");
     } else rz.classList.add("hidden");
   }
 
-  // Nothing to grade on a WAIT. An EXPLORATORY call IS gradeable (that's how the
-  // system gathers its first outcomes for this setup).
-  const fb = $("feedbackBox"); if (fb) fb.classList.toggle("hidden", isWait);
+  // Always gradeable — WIN/LOSS is how the confidence learns.
+  const fb = $("feedbackBox"); if (fb) fb.classList.remove("hidden");
 
   $("mAgreement").textContent = Math.round((r.agreement || 0) * 100) + "%";
   $("mRegime").textContent = (r.regime || "—").replace(/_/g, " ");
@@ -293,7 +276,7 @@ function showResult(r, persist) {
 
 async function sendFeedback(result) {
   const r = state.lastResult;
-  if (!r || r._answered || r.decision === "WAIT") return;  // nothing to grade on a WAIT
+  if (!r || r._answered) return;
   $("winBtn").disabled = true; $("lossBtn").disabled = true;
   try {
     await api("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" },

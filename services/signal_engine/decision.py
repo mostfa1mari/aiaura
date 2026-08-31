@@ -1,24 +1,20 @@
-"""Decision gate — SIGNAL, EXPLORATORY, or WAIT.
+"""Decision — always a directional BUY/SELL, graded by honest confidence.
 
-A disciplined trader does not take every setup, and does not pretend to know
-odds it hasn't measured. This gate has three outcomes:
+The app ALWAYS gives a clear BUY/SELL the user can act on and grade; it never
+hides the call behind a WAIT. Honesty lives in the CALIBRATED confidence (learned
+from the user's own settled outcomes) and a tier label:
 
-  * SIGNAL      — enough comparable settled outcomes to CALIBRATE this setup AND
-                  the calibrated win chance clears the payout break-even (with a
-                  margin) AND the indicators/strategies/similarity confirm it.
-                  Break-even for a binary paying `payout`% is 1/(1+payout/100):
-                  92% -> 52.1% needed, 71% -> 58.5% needed. Below that a trade is
-                  negative expected value no matter how "strong" it looks.
-  * EXPLORATORY — the direction is confirmed by confluence, but there isn't yet
-                  enough history for THIS asset/expiry to calibrate a confident
-                  probability. Emitted as an explicitly UNCALIBRATED, gradeable
-                  read so the system can gather its first outcomes and learn.
-                  Never presented as a confident win probability.
-  * WAIT        — no confirmation, not enough data/latency, or a calibrated setup
-                  whose honest odds don't beat the payout. Nothing to trade.
+  * strong   — calibrated on enough history, win chance beats the payout
+               break-even (1/(1+payout/100): 92% -> 52.1% needed, 71% -> 58.5%),
+               and the indicators/strategies/similarity agree.
+  * moderate — win chance at/above break-even but not a standout.
+  * low      — win chance below break-even, or too little history yet. Still
+               shown (with the honest number) so the user decides; grading it
+               feeds back into the calibration for that asset.
 
-This never promises a win. A confident SIGNAL requires real, asset-specific
-evidence — it can't ride an optimistic global average into an emit.
+This never promises a win and never guarantees avoiding losing streaks — no such
+guarantee is possible on broker OTC. It reports honest odds and always lets the
+user trade and report the outcome so the confidence keeps getting more accurate.
 """
 
 from __future__ import annotations
@@ -96,56 +92,44 @@ def decide(
     similarity: Optional[dict] = None,
     latency_viability: Optional[dict] = None,
 ) -> Decision:
+    """ALWAYS returns a directional call (BUY/SELL) so the user gets a clear,
+    gradeable signal every time. Honesty lives in the calibrated confidence and
+    the tier (strong / moderate / low), NOT in blocking the trade. The number
+    updates from the user's reported outcomes, so grading losses genuinely lowers
+    the confidence on that asset over time."""
     be = break_even(payout)
-    required = max(MIN_CONFIDENCE, be + EDGE_MARGIN)
     conf = calibrated.p
     edge = conf - be
     confl = _confluence(side, strategies, similarity)
 
-    def mk(decision: str, tier: str, reasons: List[str]) -> Decision:
-        return Decision(
-            decision=decision, side=(side if decision != "WAIT" else None),
-            confidence=conf, confidence_low=calibrated.low, confidence_high=calibrated.high,
-            support=calibrated.support, basis=calibrated.basis, break_even=be, edge=edge,
-            tier=tier, confluence=confl, reasons=reasons,
-        )
+    # Tier drives styling + guidance only — never suppression.
+    calibrated_enough = calibrated.support >= MIN_SUPPORT_FOR_SIGNAL
+    if calibrated_enough and conf >= be + EDGE_MARGIN and confl >= MIN_CONFLUENCE:
+        tier = "strong"
+    elif conf >= be:
+        tier = "moderate"
+    else:
+        tier = "low"
 
-    # Structural blockers — independent of how much calibration history exists.
-    blockers: List[str] = []
-    if data_sufficiency < MIN_DATA_SUFFICIENCY:
-        blockers.append("not enough recent candles to be sure yet")
-    if confl < MIN_CONFLUENCE:
-        blockers.append("the strategies don't agree strongly enough")
-    if latency_viability and str(latency_viability.get("verdict", "")).lower() in (
-        "too_slow", "infeasible", "not_viable"):
-        blockers.append("the signal is too slow to enter for this expiry")
-    if blockers:
-        return mk("WAIT", "wait", blockers)
-
-    # Enough comparable outcomes to make a CALIBRATED, confident judgment.
-    if calibrated.support >= MIN_SUPPORT_FOR_SIGNAL:
-        if conf >= required:
-            tier = "strong" if calibrated.low >= be else "moderate"
-            return mk("SIGNAL", tier, [_positive_reason(tier, conf, be, calibrated)])
-        if conf < MIN_CONFIDENCE:
-            reason = f"confidence {conf*100:.0f}% is below the 50% floor"
-        else:
-            reason = (f"confidence {conf*100:.0f}% doesn't clear the {required*100:.0f}% "
-                      f"needed (break-even {be*100:.0f}% + {EDGE_MARGIN*100:.0f}% margin)")
-        return mk("WAIT", "wait", [reason])
-
-    # Not enough comparable outcomes to calibrate THIS setup: emit an explicitly
-    # UNCALIBRATED, gradeable exploratory read so the system can accumulate its
-    # first per-setup outcomes. This is NOT a confident probability claim.
-    return mk("EXPLORATORY", "exploratory", [
-        f"No track record for this asset/expiry yet ({calibrated.support} comparable "
-        f"outcome{'' if calibrated.support == 1 else 's'}). This is the model's raw "
-        f"directional read — grade it so future signals here can be calibrated."])
+    return Decision(
+        decision="SIGNAL", side=side,
+        confidence=conf, confidence_low=calibrated.low, confidence_high=calibrated.high,
+        support=calibrated.support, basis=calibrated.basis, break_even=be, edge=edge,
+        tier=tier, confluence=confl,
+        reasons=[_reason(tier, conf, be, calibrated, confl)],
+    )
 
 
-def _positive_reason(tier: str, conf: float, be: float, calibrated: Calibrated) -> str:
-    lead = "High-confidence setup" if tier == "strong" else "Setup clears the payout math"
-    lo, hi = round(calibrated.low * 100), round(calibrated.high * 100)
-    basis = (f", from {calibrated.support} comparable past outcomes" if calibrated.support else "")
-    return (f"{lead}: {conf*100:.0f}% (range {lo}–{hi}%) calibrated win chance, "
-            f"needs {be*100:.0f}% to profit{basis}.")
+def _reason(tier: str, conf: float, be: float, calibrated: Calibrated, confl: int) -> str:
+    pct, bep = round(conf * 100), round(be * 100)
+    if tier == "strong":
+        return (f"Strong: {pct}% calibrated win chance vs {bep}% break-even, "
+                f"{confl}/3 signals agree, from {calibrated.support} past outcomes.")
+    if tier == "moderate":
+        return (f"Moderate: {pct}% calibrated win chance vs {bep}% needed to profit. "
+                f"Tradeable but not a standout.")
+    if calibrated.support:
+        return (f"Low confidence: {pct}% win chance is below the {bep}% needed at this "
+                f"payout — size small or skip.")
+    return (f"Low confidence: still learning this asset — grade the outcome so the "
+            f"win chance here gets accurate.")

@@ -1,14 +1,12 @@
-"""Decision-gate tests — SIGNAL / EXPLORATORY / WAIT.
+"""Decision tests — always a directional BUY/SELL, tiered by honest confidence.
 
-Verifies the payout break-even math, the sub-50% floor, the confluence and
-data/latency gates, the support floor that keeps a confident SIGNAL from riding
-a coarse base rate, the EXPLORATORY bootstrap path, and honest reason text.
+The app never blocks a call; it grades it strong / moderate / low. Verifies the
+break-even math, the tier boundaries, confluence handling (similarity UP/DOWN
+mapping, net-zero ensemble), and that a signal is ALWAYS emitted and gradeable.
 """
 
 from services.signal_engine.calibration import Calibrated
-from services.signal_engine.decision import (
-    break_even, decide, MIN_CONFIDENCE, MIN_SUPPORT_FOR_SIGNAL,
-)
+from services.signal_engine.decision import break_even, decide, MIN_SUPPORT_FOR_SIGNAL
 
 
 def cal(p, low=None, high=None, support=30):
@@ -29,123 +27,82 @@ def test_break_even_matches_payout_math():
     assert break_even(0) == 0.55
 
 
-def test_emits_strong_signal_when_everything_aligns():
+def test_always_emits_a_directional_signal():
+    # Even with terrible confidence, no confluence, thin data: still a BUY/SELL.
+    d = decide(side="SELL", calibrated=cal(0.20, support=0), payout=71,
+               data_sufficiency=0.1, strategies=None, similarity=None,
+               latency_viability={"verdict": "too_slow"})
+    assert d.decision == "SIGNAL"
+    assert d.side == "SELL"
+
+
+def test_strong_when_calibrated_confident_and_confirmed():
     d = decide(side="BUY", calibrated=cal(0.70, low=0.60, support=30), payout=92,
                data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
                latency_viability=FAST)
-    assert d.decision == "SIGNAL"
-    assert d.side == "BUY"
-    assert d.tier == "strong"                          # low (0.60) >= break-even
+    assert d.decision == "SIGNAL" and d.tier == "strong"
     assert d.confluence == 3
 
 
-def test_waits_when_confidence_below_break_even():
-    # 53% would beat 50% but NOT the 58.5% needed at 71% payout. Support is high
-    # so this is a CALIBRATED wait, not exploratory.
-    d = decide(side="BUY", calibrated=cal(0.53, support=30), payout=71,
+def test_moderate_when_just_above_break_even():
+    # 53% >= 52.1% break-even but < break-even+2% margin -> moderate, not strong.
+    d = decide(side="BUY", calibrated=cal(0.53, support=30), payout=92,
                data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
                latency_viability=FAST)
-    assert d.decision == "WAIT"
-    assert any("clear" in r or "needed" in r for r in d.reasons)
+    assert d.decision == "SIGNAL" and d.tier == "moderate"
 
 
-def test_waits_below_fifty_floor_even_if_payout_low():
-    d = decide(side="BUY", calibrated=cal(0.47, support=30), payout=400,
+def test_low_when_below_break_even():
+    d = decide(side="BUY", calibrated=cal(0.45, support=30), payout=92,
                data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
                latency_viability=FAST)
-    assert d.decision == "WAIT"
-    assert d.confidence < MIN_CONFIDENCE
+    assert d.decision == "SIGNAL" and d.tier == "low"
 
 
-def test_waits_when_strategies_disagree():
-    d = decide(side="BUY", calibrated=cal(0.72, low=0.62, support=30), payout=92,
-               data_sufficiency=1.0,
-               strategies={"signal": "SELL", "contributors": 5, "score": -0.8},
-               similarity={"leans": "DOWN", "confident": True},
-               latency_viability=FAST)
-    assert d.decision == "WAIT"                         # confluence == 1 (baseline only)
-    assert d.confluence == 1
-
-
-def test_waits_when_data_insufficient():
-    d = decide(side="BUY", calibrated=cal(0.72, low=0.62, support=30), payout=92,
-               data_sufficiency=0.5, strategies=STRAT_BUY, similarity=SIM_BUY,
-               latency_viability=FAST)
-    assert d.decision == "WAIT"
-
-
-def test_waits_when_latency_too_slow():
-    d = decide(side="BUY", calibrated=cal(0.72, low=0.62, support=30), payout=92,
-               data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
-               latency_viability={"verdict": "too_slow", "fraction": 1.4})
-    assert d.decision == "WAIT"
-
-
-def test_moderate_tier_when_lower_bound_below_break_even():
-    d = decide(side="BUY", calibrated=cal(0.60, low=0.48, support=30), payout=92,
-               data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
+def test_thin_history_cannot_be_strong():
+    # High confidence but too few outcomes -> not "strong" (support gate on tier).
+    d = decide(side="BUY", calibrated=cal(0.70, low=0.60, support=MIN_SUPPORT_FOR_SIGNAL - 1),
+               payout=92, data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
                latency_viability=FAST)
     assert d.decision == "SIGNAL"
-    assert d.tier == "moderate"
+    assert d.tier == "moderate"                     # >= break-even but not calibrated enough
+    assert d.tier != "strong"
 
 
-def test_similarity_up_confirms_buy_as_second_confluence():
-    # Strategy ensemble is silent; similarity UP must map to BUY and provide the
-    # 2nd confirmation so a strong, confirmed BUY still emits.
+def test_low_no_history_reason_mentions_learning():
+    d = decide(side="BUY", calibrated=cal(0.44, support=0), payout=92,
+               data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
+               latency_viability=FAST)
+    assert d.tier == "low"
+    assert any("learning" in r for r in d.reasons)
+
+
+def test_confluence_needs_similarity_up_mapping_for_strong():
+    # Strategy silent; similarity UP must map to BUY to reach confluence 2 (strong).
     d = decide(side="BUY", calibrated=cal(0.70, low=0.60, support=30), payout=92,
                data_sufficiency=1.0,
-               strategies={"signal": "SELL", "contributors": 0, "score": 0.0},   # not confirming
+               strategies={"signal": "SELL", "contributors": 0, "score": 0.0},
                similarity={"leans": "UP", "confident": True},
                latency_viability=FAST)
-    assert d.confluence == 2
-    assert d.decision == "SIGNAL"
+    assert d.confluence == 2 and d.tier == "strong"
 
 
 def test_net_zero_strategy_ensemble_is_not_a_confirmation():
-    # A balanced (net-zero) ensemble defaults its label to BUY, but must NOT
-    # count as a confirmation — otherwise BUY gets a spurious confluence.
     d = decide(side="BUY", calibrated=cal(0.70, low=0.60, support=30), payout=92,
                data_sufficiency=1.0,
                strategies={"signal": "BUY", "contributors": 2, "score": 0.0},
                similarity=None, latency_viability=FAST)
     assert d.confluence == 1
-    assert d.decision == "WAIT"
+    assert d.tier == "moderate"                     # confirmed conf but confluence<2 -> not strong
 
 
-def test_exploratory_when_support_below_floor():
-    # Confirmed direction but not enough comparable history to calibrate:
-    # emit a gradeable EXPLORATORY read, never a confident SIGNAL.
-    d = decide(side="BUY", calibrated=cal(0.62, support=MIN_SUPPORT_FOR_SIGNAL - 1),
-               payout=92, data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
-               latency_viability=FAST)
-    assert d.decision == "EXPLORATORY"
-    assert d.side == "BUY"
-    assert d.tier == "exploratory"
-
-
-def test_zero_support_cannot_emit_confident_signal():
-    # A brand-new asset+expiry (support 0) whose coarse base rate looks good must
-    # NOT be emitted as a confident SIGNAL on inherited evidence.
-    d = decide(side="BUY", calibrated=cal(0.60, low=0.55, support=0), payout=92,
-               data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
-               latency_viability=FAST)
-    assert d.decision == "EXPLORATORY"
-
-
-def test_exploratory_still_requires_confluence():
-    d = decide(side="BUY", calibrated=cal(0.62, support=2), payout=92,
-               data_sufficiency=1.0,
-               strategies={"signal": "SELL", "contributors": 3, "score": -0.5},
-               similarity={"leans": "DOWN", "confident": True},
-               latency_viability=FAST)
-    assert d.decision == "WAIT"                          # no confirmation -> not even exploratory
-
-
-def test_wait_reason_names_the_real_threshold():
-    # payout 92 -> be 52%, required 54%; conf 53% clears be but not required.
-    d = decide(side="BUY", calibrated=cal(0.53, support=30), payout=92,
-               data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
-               latency_viability=FAST)
-    assert d.decision == "WAIT"
-    joined = " ".join(d.reasons)
-    assert "54%" in joined and "margin" in joined       # states the enforced threshold, not just be
+def test_low_payout_needs_higher_confidence_to_clear():
+    # 55% clears 52% (92% payout) but not 58.5% (71% payout).
+    hi_payout = decide(side="BUY", calibrated=cal(0.55, support=30), payout=92,
+                       data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
+                       latency_viability=FAST)
+    lo_payout = decide(side="BUY", calibrated=cal(0.55, support=30), payout=71,
+                       data_sufficiency=1.0, strategies=STRAT_BUY, similarity=SIM_BUY,
+                       latency_viability=FAST)
+    assert hi_payout.tier in ("strong", "moderate")
+    assert lo_payout.tier == "low"                  # 55% < 58.5% break-even
