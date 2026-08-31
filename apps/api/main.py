@@ -55,6 +55,11 @@ WEB_DIR = PROJECT_ROOT / "apps" / "web"
 # across restarts. Override with AIAURA_MODELS_DIR.
 MODELS_DIR = Path(os.environ.get("AIAURA_MODELS_DIR", str(PROJECT_ROOT / "data" / "models")))
 
+# Build marker so a deploy can be verified without a token (Railway injects the
+# commit SHA). Surfaced in the open /api/health.
+BUILD_SHA = (os.environ.get("RAILWAY_GIT_COMMIT_SHA")
+             or os.environ.get("AIAURA_BUILD") or "dev")[:12]
+
 # Offered expiries (seconds) and the candle timeframe used to analyze each.
 EXPIRY_TIMEFRAME = {
     5: 5,
@@ -331,12 +336,13 @@ def _require_provider() -> PocketOptionMarketDataProvider:
 def health():
     auth_required = bool((os.environ.get("AIAURA_TOKEN") or "").strip())
     if state.provider is None:
-        return {"connected": False, "auth_required": auth_required,
+        return {"connected": False, "auth_required": auth_required, "build": BUILD_SHA,
                 "error": state.startup_error or "provider not started"}
     h = state.provider.health_check()
     return {
         "connected": h.connected,
         "auth_required": auth_required,
+        "build": BUILD_SHA,
         "status": h.status,
         "time_synced": h.time_synced,
         "ticks_received": h.ticks_received,
