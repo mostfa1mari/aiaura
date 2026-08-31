@@ -278,17 +278,30 @@ async function sendFeedback(result) {
   const r = state.lastResult;
   if (!r || r._answered) return;
   $("winBtn").disabled = true; $("lossBtn").disabled = true;
-  try {
-    await api("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ result, prediction: r }) });
-    r._answered = true;
-    cfgDel("aiaura_last_signal");                 // answered -> stop persisting
-    $("feedbackDone").classList.remove("hidden");
-    refreshStats();
-  } catch (e) {
-    $("winBtn").disabled = false; $("lossBtn").disabled = false;
-    $("controlsHint").textContent = `Feedback failed: ${e.message}`;
+  const done = $("feedbackDone");
+  done.classList.remove("hidden"); done.style.color = ""; done.textContent = "Saving…";
+  // The write is idempotent (stable prediction_id), so retrying a transient
+  // failure is safe and won't double-count.
+  let lastErr = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await api("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ result, prediction: r }) });
+      r._answered = true;
+      cfgDel("aiaura_last_signal");               // answered -> stop persisting
+      done.style.color = ""; done.textContent = "Recorded ✓";
+      refreshStats();
+      return;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) await new Promise((res) => setTimeout(res, 800));
+    }
   }
+  // All attempts failed — show the reason RIGHT HERE (not just the top hint).
+  $("winBtn").disabled = false; $("lossBtn").disabled = false;
+  done.style.color = "var(--sell)";
+  done.textContent = "Couldn't save: " + (lastErr ? lastErr.message : "unknown") + " — tap again";
+  $("controlsHint").textContent = `Feedback failed: ${lastErr ? lastErr.message : "unknown"}`;
 }
 
 async function refreshStats() {

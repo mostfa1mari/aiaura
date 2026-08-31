@@ -638,16 +638,20 @@ def feedback(req: FeedbackRequest):
         "strategies": p.get("strategies"),
         "historical_similarity": p.get("historical_similarity"),
     }
-    sid = state.store.record_prediction(
-        asset=p["asset"], expiry_s=int(p.get("expiry_s", 0)), signal=p["signal"],
-        score=p.get("score", 0.0), strength=p.get("strength", 0.0),
-        agreement=p.get("agreement", 0.0), regime=p.get("regime", ""),
-        data_sufficiency=p.get("data_sufficiency", 0.0), entry_price=p.get("entry_price"),
-        market_ts=p.get("market_ts"), prediction_latency_ms=p.get("prediction_latency_ms", 0.0),
-        model_version=p.get("model_version", ""), context=context,
-        signal_id=p.get("prediction_id"),   # stable id -> replays are idempotent
-    )
-    state.store.record_result(sid, result)
+    try:
+        sid = state.store.record_prediction(
+            asset=p["asset"], expiry_s=int(p.get("expiry_s", 0) or 0), signal=p["signal"],
+            score=p.get("score", 0.0), strength=p.get("strength", 0.0),
+            agreement=p.get("agreement", 0.0), regime=p.get("regime", ""),
+            data_sufficiency=p.get("data_sufficiency", 0.0), entry_price=p.get("entry_price"),
+            market_ts=p.get("market_ts"), prediction_latency_ms=p.get("prediction_latency_ms", 0.0),
+            model_version=p.get("model_version", ""), context=context,
+            signal_id=p.get("prediction_id"),   # stable id -> replays are idempotent
+        )
+        state.store.record_result(sid, result)
+    except Exception as exc:
+        logger.exception("feedback record failed")
+        raise HTTPException(status_code=500, detail=f"record failed: {type(exc).__name__}: {exc}")
     if result == "LOSS":
         try:
             from services.learning_engine.post_trade import analyze_loss
