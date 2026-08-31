@@ -59,10 +59,12 @@
       <div id="signalBig" class="signal-big">—</div>
       <div class="signal-sub"><span id="signalAsset">—</span> · <span id="signalExpiry">—</span></div>
 
-      <div class="meter" title="Signal strength">
+      <div class="meter" title="Calibrated win probability">
         <div class="meter-track"><div id="strengthBar" class="meter-fill"></div></div>
-        <div class="meter-labels"><span>Signal strength</span><span id="strengthVal">—</span></div>
+        <div class="meter-labels"><span id="meterLabel">Confidence (calibrated)</span><span id="strengthVal">—</span></div>
       </div>
+      <div id="confMeta" class="conf-meta"></div>
+      <div id="resultReasons" class="reasons hidden"></div>
 
       <div class="stats-grid">
         <div class="stat"><div class="stat-k">Model agreement</div><div id="mAgreement" class="stat-v">—</div></div>
@@ -77,7 +79,7 @@
       </div>
       <div id="resultNote" class="note hidden"></div>
 
-      <div class="feedback">
+      <div class="feedback" id="feedbackBox">
         <p class="feedback-q">Did it win? Report the outcome so AI AURA can learn.</p>
         <div class="feedback-btns">
           <button id="winBtn" class="fb win" type="button">WIN</button>

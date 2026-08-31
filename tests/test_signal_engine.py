@@ -87,6 +87,24 @@ def test_store_roundtrip_and_stats(tmp_path):
     assert stats["wins"] == 1 and stats["settled"] == 1 and stats["win_rate"] == 1.0
 
 
+def test_record_prediction_is_idempotent_on_signal_id(tmp_path):
+    # A replayed feedback (retry / double-tap) with the same stable id must count
+    # the outcome exactly once, not inflate the calibration sample.
+    store = SignalStore(tmp_path / "idem.db")
+    kw = dict(asset="EURUSD_otc", expiry_s=60, signal="BUY", score=0.3, strength=0.3,
+              agreement=0.7, regime="trend_up", data_sufficiency=1.0, entry_price=1.1,
+              market_ts=BASE, prediction_latency_ms=20.0, model_version="baseline-1.0.0",
+              context={}, signal_id="fixed-id-123")
+    sid1 = store.record_prediction(**kw)
+    store.record_result(sid1, "WIN")
+    sid2 = store.record_prediction(**kw)          # replay: same id
+    assert sid1 == sid2 == "fixed-id-123"
+    assert store.record_result(sid2, "LOSS") is False   # already settled -> no flip
+    stats = store.stats()
+    assert stats["settled"] == 1 and stats["wins"] == 1   # counted once, still WIN
+    assert len(store.all_for_training()) == 1
+
+
 def test_store_losing_streak(tmp_path):
     store = SignalStore(tmp_path / "s.db")
     import time

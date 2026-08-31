@@ -16,6 +16,7 @@ import os
 import sys
 import threading
 import time
+import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -41,6 +42,8 @@ from services.strategies import ensemble as strategy_ensemble
 from services.market_data.security import MissingCredentialError, load_ssid, setup_logging
 from services.market_data.storage import TickStore
 from services.signal_engine import BASELINE_VERSION, generate_signal
+from services.signal_engine.calibration import Calibrator
+from services.signal_engine.decision import decide as decide_signal
 from services.signal_engine.ml_predictor import MLPredictor
 from services.signal_engine.store import make_store
 
@@ -84,9 +87,27 @@ class AppState:
     prune_stop: Optional[object] = None
     subscribed: set = set()
     startup_error: Optional[str] = None
+    _calibrator: Optional[Calibrator] = None
+    _calib_n: int = -1                    # settled count the calibrator was built from
 
 
 state = AppState()
+
+
+def get_calibrator() -> Optional[Calibrator]:
+    """Confidence calibrator built from ALL settled outcomes. Rebuilt lazily only
+    when the number of settled signals changes (cheap; pure-Python)."""
+    if state.store is None:
+        return None
+    try:
+        settled = [r for r in state.store.all_for_training()
+                   if str(r.get("result", "")).upper() in ("WIN", "LOSS")]
+    except Exception:
+        return state._calibrator
+    if len(settled) != state._calib_n:
+        state._calibrator = Calibrator(settled)
+        state._calib_n = len(settled)
+    return state._calibrator
 
 
 @asynccontextmanager
@@ -373,7 +394,7 @@ def analyze(req: AnalyzeRequest):
         fv = compute_features(closed, timeframe_s=timeframe)
         ens = strategy_ensemble(fv.values)
         strategies = {"signal": ens.signal, "agreement": round(ens.agreement, 3),
-                      "contributors": ens.contributors}
+                      "contributors": ens.contributors, "score": round(ens.score, 4)}
         window = closed[-400:]
         rows, names = build_dataset(window, horizon_s=float(req.expiry_s), warmup=50)
         if len(rows) >= 40:
@@ -392,13 +413,44 @@ def analyze(req: AnalyzeRequest):
         {"name": s.name, "direction": s.direction, "score": round(s.score, 4), "detail": s.detail}
         for s in result.sub_signals
     ]
+
+    # Calibrate raw conviction into an HONEST win probability from settled
+    # outcomes, then decide whether the edge clears the payout math + confluence.
+    # If not, we tell the user to WAIT instead of surfacing a losing-odds trade.
+    calib = get_calibrator()
+    calibrated = calib.calibrate(result.strength, asset, req.expiry_s) if calib \
+        else Calibrator([]).calibrate(result.strength, asset, req.expiry_s)
+    decision = decide_signal(
+        side=result.signal, calibrated=calibrated, payout=payout,
+        data_sufficiency=result.data_sufficiency,
+        strategies=strategies, similarity=similarity,
+        latency_viability=latency_viability,
+    )
+
     # NOTE: a signal is NOT recorded here. It is stored only when the user
     # reports WIN/LOSS (see /api/feedback), so an un-reported signal never
     # counts in the stats. The client holds this payload and sends it back.
     return {
         "asset": asset,
         "expiry_s": req.expiry_s,
-        "signal": result.signal,
+        # Stable id so a replayed /api/feedback (retry, double-tap) records the
+        # same outcome once, not twice (the client echoes it back).
+        "prediction_id": uuid.uuid4().hex,
+        # Decision gate: SIGNAL / EXPLORATORY (a real BUY/SELL) or WAIT (no edge).
+        "decision": decision.decision,
+        "signal": decision.side or result.signal,   # side only meaningful when SIGNAL
+        "tier": decision.tier,
+        # Calibrated, honest confidence (replaces raw conviction as the headline).
+        "confidence": round(decision.confidence, 4),
+        "confidence_low": round(decision.confidence_low, 4),
+        "confidence_high": round(decision.confidence_high, 4),
+        "confidence_support": decision.support,
+        "confidence_basis": decision.basis,
+        "break_even": round(decision.break_even, 4),
+        "edge": round(decision.edge, 4),
+        "reasons": decision.reasons,
+        "confluence": decision.confluence,
+        # Raw conviction kept for transparency (NOT a probability).
         "score": round(result.score, 4),
         "strength": round(result.strength, 4),
         "agreement": round(result.agreement, 4),
@@ -444,6 +496,7 @@ def feedback(req: FeedbackRequest):
         data_sufficiency=p.get("data_sufficiency", 0.0), entry_price=p.get("entry_price"),
         market_ts=p.get("market_ts"), prediction_latency_ms=p.get("prediction_latency_ms", 0.0),
         model_version=p.get("model_version", ""), context=context,
+        signal_id=p.get("prediction_id"),   # stable id -> replays are idempotent
     )
     state.store.record_result(sid, result)
     if result == "LOSS":

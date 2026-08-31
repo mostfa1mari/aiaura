@@ -29,9 +29,9 @@ _COLUMNS = (
 
 def _new_row(asset, expiry_s, signal, score, strength, agreement, regime,
              data_sufficiency, entry_price, market_ts, prediction_latency_ms,
-             model_version, context) -> tuple:
+             model_version, context, signal_id=None) -> tuple:
     return (
-        uuid.uuid4().hex, time.time(), asset, int(expiry_s), signal, score, strength,
+        signal_id or uuid.uuid4().hex, time.time(), asset, int(expiry_s), signal, score, strength,
         agreement, regime, data_sufficiency, entry_price, market_ts,
         prediction_latency_ms, model_version, json.dumps(context), None, None,
     )
@@ -123,8 +123,10 @@ class SqliteSignalStore:
     def record_prediction(self, **kw) -> str:
         row = _new_row(**kw)
         with self._lock:
+            # OR IGNORE: a replayed feedback with the same signal_id is a no-op,
+            # so one real outcome is counted exactly once.
             self._conn.execute(
-                f"INSERT INTO predictions ({_COLUMNS}) VALUES ({','.join('?' * 17)})", row
+                f"INSERT OR IGNORE INTO predictions ({_COLUMNS}) VALUES ({','.join('?' * 17)})", row
             )
             self._conn.commit()
         return row[0]
@@ -287,8 +289,11 @@ class PostgresSignalStore:
         with self._lock:
             self._reconnect_if_needed()
             with self._conn.cursor() as cur:
+                # ON CONFLICT DO NOTHING: a replayed feedback with the same
+                # signal_id is a no-op, so one real outcome is counted once.
                 cur.execute(
-                    f"INSERT INTO predictions ({_COLUMNS}) VALUES ({','.join(['%s'] * 17)})", row
+                    f"INSERT INTO predictions ({_COLUMNS}) VALUES ({','.join(['%s'] * 17)}) "
+                    f"ON CONFLICT (signal_id) DO NOTHING", row
                 )
         return row[0]
 
