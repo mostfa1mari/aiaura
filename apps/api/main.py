@@ -92,6 +92,7 @@ class AppState:
     prune_stop: Optional[object] = None
     subscribed: set = set()
     startup_error: Optional[str] = None
+    history_ok: bool = True               # last watchdog history probe (analyze-ready?)
     _calibrator: Optional[Calibrator] = None
     _calib_n: int = -1                    # settled count the calibrator was built from
 
@@ -344,21 +345,42 @@ def _start_tick_watchdog(provider) -> None:
     started = time.time()
 
     def _loop():
+        empty_streak = 0
         while True:
-            time.sleep(15)
+            time.sleep(20)
             try:
                 h = provider.health_check()
                 age = h.last_tick_age_s
-                if (time.time() - started > _WATCHDOG_GRACE_S and h.ticks_received > 0
-                        and (age is None or age > _WATCHDOG_STALE_S)):
-                    logger.error("watchdog: stream frozen (%ss since last tick) — "
-                                 "exiting for a clean restart", round(age) if age else "?")
+                up = time.time() - started > _WATCHDOG_GRACE_S
+                # (1) Zombie: socket connected but ticks frozen.
+                if up and h.ticks_received > 0 and (age is None or age > _WATCHDOG_STALE_S):
+                    logger.error("watchdog: stream frozen (%ss since last tick) — restarting",
+                                 round(age) if age else "?")
                     os._exit(1)
+                # (2) Half-broken after reconnects: ticks flow (age fine) but the
+                # HISTORY channel returns nothing — analyze fails while health looks
+                # GOOD, which the tick check can't see. Probe it directly.
+                if up and h.connected:
+                    try:
+                        c = provider.get_historical_candles(DEFAULT_ASSET, 60, pages=1)
+                        closed = sum(1 for x in c if getattr(x, "complete", False))
+                    except Exception:
+                        closed = 0
+                    state.history_ok = closed >= 20
+                    if closed < 20:
+                        empty_streak += 1
+                        if empty_streak >= 3:  # ~1 min of dead history despite live ticks
+                            logger.error("watchdog: history fetch dead (%d empty probes) "
+                                         "despite live ticks — restarting", empty_streak)
+                            os._exit(1)
+                    else:
+                        empty_streak = 0
             except Exception:
                 logger.debug("watchdog check failed", exc_info=True)
 
     threading.Thread(target=_loop, name="tick-watchdog", daemon=True).start()
-    logger.info("tick watchdog started (restart if no ticks for %.0fs)", _WATCHDOG_STALE_S)
+    logger.info("tick watchdog started (restart if ticks frozen %.0fs OR history dead)",
+                _WATCHDOG_STALE_S)
 
 
 def _fetch_candles_resilient(provider, asset: str, timeframe: int,
@@ -401,22 +423,30 @@ def health():
                 "error": state.startup_error or "provider not started"}
     h = state.provider.health_check()
     age = h.last_tick_age_s
-    # Data actually flowing = a live tick within the last 15s. A socket can be
-    # "connected" yet dead (PO stopped streaming, e.g. the SSID was invalidated
-    # by a concurrent login) — in that case ticks freeze and analyze can't get
-    # fresh data. Surface it plainly so it's diagnosable without guessing.
-    data_flowing = age is not None and age < 15.0
+    # "Ready" needs BOTH a live tick within 15s AND a working history channel:
+    # after reconnects the socket can stream ticks yet fail history requests, so
+    # analyze breaks while ticks look fine. state.history_ok is the watchdog's
+    # last history probe. Report the combined readiness so the client's pill
+    # means "analyze will work", not merely "ticks flowing".
+    ticks_flowing = age is not None and age < 15.0
+    history_ok = bool(state.history_ok)
+    data_flowing = ticks_flowing and history_ok
+    status = h.status if (ticks_flowing and history_ok) else "DEGRADED"
     hint = ""
-    if h.connected and not data_flowing:
-        hint = ("Connected but receiving NO live data (stream stale). The Pocket "
-                "Option session likely expired or was invalidated by a concurrent "
-                "login — capture a fresh PO_SSID into the server env and redeploy.")
+    if h.connected and not ticks_flowing:
+        hint = ("Connected but receiving NO live data (stream stale) — the worker "
+                "will self-restart shortly to restore it.")
+    elif h.connected and ticks_flowing and not history_ok:
+        hint = ("Ticks are live but history requests are failing (analyze won't "
+                "work yet) — the worker will self-restart shortly to fix it.")
     return {
         "connected": h.connected,
         "auth_required": auth_required,
         "build": BUILD_SHA,
-        "status": h.status,
+        "status": status,
         "data_flowing": data_flowing,
+        "ticks_flowing": ticks_flowing,
+        "history_ok": history_ok,
         "last_tick_age_s": round(age, 1) if age is not None else None,
         "hint": hint,
         "time_synced": h.time_synced,
