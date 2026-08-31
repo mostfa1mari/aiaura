@@ -181,6 +181,9 @@ async def lifespan(_app: FastAPI):
         # is already attached). This runs for as long as the server runs — no
         # separate collector process needed.
         _start_collection(provider)
+        # Self-heal a zombie PO connection (socket up but stream frozen): the
+        # in-process rebuild can't always recover it, so restart the worker.
+        _start_tick_watchdog(provider)
         # Automatic self-learning: retrains in the background and hot-swaps a
         # promoted champion. Disable with AIAURA_AUTOLEARN=0.
         if (os.environ.get("AIAURA_AUTOLEARN", "1") or "1") != "0":
@@ -325,6 +328,37 @@ def _start_collection(provider: PocketOptionMarketDataProvider) -> list:
             logger.info("collect: skip %s (%s)", asset, exc)
     logger.info("collecting %d assets continuously: %s", len(ok), ok)
     return ok
+
+
+_WATCHDOG_STALE_S = float(os.environ.get("AIAURA_WATCHDOG_STALE_S", "120"))
+_WATCHDOG_GRACE_S = 180.0
+
+
+def _start_tick_watchdog(provider) -> None:
+    """If ticks freeze for too long despite the socket looking connected (a zombie
+    connection the in-process rebuild can't recover), exit so the platform (Railway
+    restartPolicy) restarts us with a fresh connection — proven to restore streaming.
+    Disable with AIAURA_WATCHDOG=0."""
+    if (os.environ.get("AIAURA_WATCHDOG", "1") or "1") == "0":
+        return
+    started = time.time()
+
+    def _loop():
+        while True:
+            time.sleep(30)
+            try:
+                h = provider.health_check()
+                age = h.last_tick_age_s
+                if (time.time() - started > _WATCHDOG_GRACE_S and h.ticks_received > 0
+                        and (age is None or age > _WATCHDOG_STALE_S)):
+                    logger.error("watchdog: stream frozen (%ss since last tick) — "
+                                 "exiting for a clean restart", round(age) if age else "?")
+                    os._exit(1)
+            except Exception:
+                logger.debug("watchdog check failed", exc_info=True)
+
+    threading.Thread(target=_loop, name="tick-watchdog", daemon=True).start()
+    logger.info("tick watchdog started (restart if no ticks for %.0fs)", _WATCHDOG_STALE_S)
 
 
 def _fetch_candles_resilient(provider, asset: str, timeframe: int,
