@@ -1,6 +1,6 @@
 // AI AURA PWA service worker — caches the app shell for offline load.
 // API calls are always network (never cached) so signals are live.
-const CACHE = "aiaura-shell-v10";
+const CACHE = "aiaura-shell-v11";
 const SHELL = [
   "/",
   "/static/styles.css",

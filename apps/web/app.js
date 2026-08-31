@@ -336,7 +336,15 @@ function preventZoom() {
   document.addEventListener("gesturestart", (e) => e.preventDefault());
   document.addEventListener("gesturechange", (e) => e.preventDefault());
   let last = 0;
-  document.addEventListener("touchend", (e) => { const n = Date.now(); if (n - last <= 300 && e.cancelable) e.preventDefault(); last = n; }, { passive: false });
+  const INTERACTIVE = "button, a, input, textarea, select, [role='button'], [role='option'], [role='radio'], .chip, .asset-row";
+  document.addEventListener("touchend", (e) => {
+    const n = Date.now();
+    // Double-tap-zoom prevention must NOT swallow taps on buttons/controls — on
+    // iOS a preventDefault here cancels the click, which was eating WIN/LOSS taps.
+    const interactive = e.target && e.target.closest && e.target.closest(INTERACTIVE);
+    if (n - last <= 300 && e.cancelable && !interactive) e.preventDefault();
+    last = n;
+  }, { passive: false });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 

@@ -14,6 +14,7 @@ deployed and the app stays on the transparent baseline.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -68,9 +69,37 @@ class AutoLearner:
         self.last_targets: List[Tuple[str, int]] = []
         self._rot = 0                 # rotation cursor over the target universe
 
+    def _load_state(self) -> None:
+        """Restore cycle count / last result across restarts so the dashboard
+        shows continuity (the watchdog restarts the worker periodically)."""
+        if self._store is None:
+            return
+        try:
+            raw = self._store.get_meta("autolearn_state")
+            if raw:
+                d = json.loads(raw)
+                self.cycles = int(d.get("cycles", 0))
+                self.last_train_at = float(d.get("last_train_at", 0.0))
+                self.last_result = d.get("last_result")
+        except Exception:
+            pass
+
+    def _persist_state(self) -> None:
+        if self._store is None:
+            return
+        try:
+            self._store.set_meta("autolearn_state", json.dumps({
+                "cycles": self.cycles,
+                "last_train_at": self.last_train_at,
+                "last_result": self.last_result,
+            }))
+        except Exception:
+            pass
+
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._load_state()
         self._thread = threading.Thread(target=self._loop, name="auto-learner", daemon=True)
         self._thread.start()
         logger.info("auto-learner started (targets=%s, interval=%.0fs)",
@@ -208,6 +237,7 @@ class AutoLearner:
         self.cycles += 1
         self.last_train_at = time.time()
         self.last_result = promoted or _summarize(results, reason, len(batch))
+        self._persist_state()  # survive watchdog/deploy restarts
         if self._store is not None:
             self._store.set_meta("last_auto_train", str(self.last_train_at))
             try:  # reset the loss-trigger baseline so the next trigger is "new" losses

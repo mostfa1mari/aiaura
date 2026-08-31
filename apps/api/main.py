@@ -378,7 +378,7 @@ def _fetch_candles_resilient(provider, asset: str, timeframe: int,
         if sum(1 for c in candles if getattr(c, "complete", False)) >= min_closed:
             break
         if attempt < attempts - 1:
-            time.sleep(0.7)  # let the stream settle, then retry
+            time.sleep(0.4)  # let the stream settle, then retry
     if last_exc is not None and not candles:
         raise HTTPException(status_code=503, detail=f"history unavailable: {last_exc}")
     return candles
@@ -544,7 +544,7 @@ def analyze(req: AnalyzeRequest):
         ens = strategy_ensemble(fv.values)
         strategies = {"signal": ens.signal, "agreement": round(ens.agreement, 3),
                       "contributors": ens.contributors, "score": round(ens.score, 4)}
-        window = closed[-400:]
+        window = closed[-200:]  # smaller window = faster analyze (lower latency)
         rows, names = build_dataset(window, horizon_s=float(req.expiry_s), warmup=50)
         if len(rows) >= 40:
             sim = HistoricalSimilarity([(r.timestamp, r.features, r.label) for r in rows])
