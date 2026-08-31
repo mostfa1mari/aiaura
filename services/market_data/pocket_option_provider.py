@@ -92,6 +92,12 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         self._client: Optional[PocketOption] = None
         self._lock = threading.RLock()      # guards fast in-memory state
         self._build_lock = threading.Lock()  # serializes connect/rebuild/disconnect
+        # Serializes history fetches: the vendored client uses ONE shared
+        # `history_data` slot + event, so concurrent get_historical_candles calls
+        # (e.g. background auto-learner vs. a live /analyze) would corrupt each
+        # other's response. Held per-call (not across a batch) so callers still
+        # interleave fairly.
+        self._history_lock = threading.Lock()
         self._buffers: Dict[str, Deque[CanonicalTick]] = {}
         self._last_tick: Dict[str, CanonicalTick] = {}
         self._subscribed: Dict[str, int] = {}          # asset -> period_s
@@ -447,13 +453,14 @@ class PocketOptionMarketDataProvider(MarketDataProvider):
         if end_time is not None:
             start_time = int(end_time + tz_offset)  # canonical UTC -> server-native
 
-        raw = client.get_historical_candles(
-            asset,
-            timeframe_s,
-            start_time=start_time,
-            offset=_HISTORY_OFFSET,
-            count_request=max(1, pages),
-        )
+        with self._history_lock:  # serialize the shared history_data channel
+            raw = client.get_historical_candles(
+                asset,
+                timeframe_s,
+                start_time=start_time,
+                offset=_HISTORY_OFFSET,
+                count_request=max(1, pages),
+            )
         if not raw:
             return []
 

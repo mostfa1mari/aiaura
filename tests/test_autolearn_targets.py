@@ -61,6 +61,36 @@ def test_static_mode_ignores_catalog():
     assert al._current_targets() == [("GBPUSD_otc", 15)]
 
 
+class _RecordingProvider:
+    """Records which assets history was requested for; has NO subscribe() so the
+    test also proves the auto-learner no longer hijacks the live stream."""
+    def __init__(self, assets):
+        self._assets = assets
+        self.requested = []
+
+    def get_assets(self):
+        return self._assets
+
+    def is_connected(self):
+        return True
+
+    def get_historical_candles(self, asset, timeframe_s, pages=8):
+        self.requested.append(asset)
+        return []  # -> run_training_cycle returns insufficient_data (no registry touch)
+
+
+def test_cycle_rotates_batch_without_subscribing():
+    provider = _RecordingProvider({f"P{i}_otc": _Info(92) for i in range(6)})
+    al = _learner(provider, payout_threshold=90.0, per_cycle=2)
+    # Empty candles make run_training_cycle short-circuit (insufficient_data)
+    # before the registry is touched, so no real training happens.
+    for _ in range(3):
+        al._cycle(reason="test")
+    assert len(provider.requested) == 6            # 3 cycles x 2 = 6 fetches
+    assert len(set(provider.requested)) == 6       # all six distinct (full rotation)
+    assert al.cycles == 3
+
+
 def test_summarize_reports_pass_breadth():
     results = [
         {"status": "trained", "promoted": False, "version": "a-rc", "metrics": {"oos_expectancy": -0.1}},

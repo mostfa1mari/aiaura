@@ -46,7 +46,10 @@ class AutoLearnConfig:
     dynamic_high_payout: bool = True
     payout_threshold: float = 90.0
     target_expiries: List[int] = field(default_factory=lambda: [60])
-    max_targets: int = 40             # safety cap on per-cycle training load
+    max_targets: int = 40             # safety cap on the high-payout universe
+    per_cycle: int = 6                # train this many pairs per cycle, rotating
+                                      # through the rest — keeps each cycle light
+                                      # so it never starves the live /analyze path
 
 
 class AutoLearner:
@@ -63,6 +66,7 @@ class AutoLearner:
         self.last_train_at: float = 0.0
         self.cycles = 0
         self.last_targets: List[Tuple[str, int]] = []
+        self._rot = 0                 # rotation cursor over the target universe
 
     def start(self) -> None:
         if self._thread is not None:
@@ -154,24 +158,32 @@ class AutoLearner:
     def _cycle(self, reason: str) -> None:
         if self._provider is None or not self._provider.is_connected():
             return
-        targets = self._current_targets()
-        self.last_targets = targets
+        full = self._current_targets()
+        self.last_targets = full
+        if not full:
+            return
+        # Train only a rotating BATCH per cycle so one pass stays light and never
+        # starves the live /analyze path; successive cycles cover the rest.
+        per = max(1, self._cfg.per_cycle)
+        n = len(full)
+        batch = [full[(self._rot + i) % n] for i in range(min(per, n))]
+        self._rot = (self._rot + len(batch)) % n
+
         results = []
         promoted = None
-        for asset, expiry in targets:
+        for asset, expiry in batch:
             if self._stop.is_set():
                 break
             timeframe = EXPIRY_TIMEFRAME.get(expiry, 15)
             try:
-                try:
-                    self._provider.subscribe(asset)
-                except Exception:
-                    pass
-                self._provider.wait_for_first_tick(asset, timeout_s=8)
                 payout = 0.8
                 info = self._provider.get_assets().get(asset)
                 if info and info.payout:
                     payout = float(info.payout) / 100.0
+                # Fetch history WITHOUT subscribing. subscribe() sends change_symbol
+                # and would hijack the live stream away from the user's asset;
+                # loadHistoryPeriod works for any asset once the stream tz is
+                # detected (provided by the live/collector streams).
                 candles = self._provider.get_historical_candles(asset, timeframe, pages=self._cfg.pages)
                 res = run_training_cycle(candles, horizon_s=float(expiry),
                                          registry=self._registry, payout=payout)
@@ -195,7 +207,7 @@ class AutoLearner:
         # the dashboard shows how many pairs were trained and whether any promoted.
         self.cycles += 1
         self.last_train_at = time.time()
-        self.last_result = promoted or _summarize(results, reason, len(targets))
+        self.last_result = promoted or _summarize(results, reason, len(batch))
         if self._store is not None:
             self._store.set_meta("last_auto_train", str(self.last_train_at))
             try:  # reset the loss-trigger baseline so the next trigger is "new" losses
