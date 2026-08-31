@@ -48,9 +48,12 @@ class AutoLearnConfig:
     payout_threshold: float = 90.0
     target_expiries: List[int] = field(default_factory=lambda: [60])
     max_targets: int = 40             # safety cap on the high-payout universe
-    per_cycle: int = 6                # train this many pairs per cycle, rotating
+    per_cycle: int = 3                # train this many pairs per cycle, rotating
                                       # through the rest — keeps each cycle light
                                       # so it never starves the live /analyze path
+    yield_between_s: float = 2.0      # pause between per-asset trainings to yield
+                                      # CPU to the websocket thread (heavy sklearn
+                                      # bursts were starving it -> stale ticks)
 
 
 class AutoLearner:
@@ -229,6 +232,10 @@ class AutoLearner:
                 promoted = res
                 logger.info("auto-learner promoted champion %s (%s)", res.get("version"), asset)
                 self._on_promote(res["version"])
+            # Yield CPU to the websocket receive thread between heavy trainings so
+            # a training burst doesn't starve it (which made ticks go stale).
+            if self._cfg.yield_between_s > 0 and not self._stop.is_set():
+                self._stop.wait(self._cfg.yield_between_s)
 
         if not results:
             return

@@ -330,8 +330,8 @@ def _start_collection(provider: PocketOptionMarketDataProvider) -> list:
     return ok
 
 
-_WATCHDOG_STALE_S = float(os.environ.get("AIAURA_WATCHDOG_STALE_S", "120"))
-_WATCHDOG_GRACE_S = 180.0
+_WATCHDOG_STALE_S = float(os.environ.get("AIAURA_WATCHDOG_STALE_S", "70"))
+_WATCHDOG_GRACE_S = 150.0
 
 
 def _start_tick_watchdog(provider) -> None:
@@ -345,7 +345,7 @@ def _start_tick_watchdog(provider) -> None:
 
     def _loop():
         while True:
-            time.sleep(30)
+            time.sleep(15)
             try:
                 h = provider.health_check()
                 age = h.last_tick_age_s
