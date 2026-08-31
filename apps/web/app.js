@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 
 function cfgGet(k, d = "") { try { return localStorage.getItem(k) || d; } catch { return d; } }
 function cfgSet(k, v) { try { localStorage.setItem(k, v); } catch {} }
+function cfgDel(k) { try { localStorage.removeItem(k); } catch {} }
 const cfg = { base: cfgGet("aiaura_base"), token: cfgGet("aiaura_token") };
 
 const api = (path, opts = {}) => {
@@ -18,7 +19,8 @@ const api = (path, opts = {}) => {
   });
 };
 
-const state = { asset: null, assets: [], expiry: null, lastSignalId: null };
+const state = { asset: null, assets: [], expiry: null, lastResult: null };
+let pickerRefresh = null;
 
 const shortSym = (s) => s.replace(/_otc$/, "").replace(/-/g, "");
 function fmtExpiry(s) {
@@ -31,6 +33,15 @@ function setStatus(stateName, text) {
   $("statusText").textContent = text;
 }
 
+// ---------- Asset categories (Pocket Option-style grouping) ----------
+const CAT_LABEL = {
+  currency: "Currencies", cryptocurrency: "Crypto", crypto: "Crypto",
+  commodity: "Commodities", stock: "Stocks", index: "Indices", indices: "Indices",
+};
+const CAT_ORDER = ["currency", "cryptocurrency", "crypto", "commodity", "stock", "index", "indices"];
+const catRank = (c) => { const i = CAT_ORDER.indexOf((c || "").toLowerCase()); return i < 0 ? 99 : i; };
+const catLabel = (c) => CAT_LABEL[(c || "").toLowerCase()] || ((c || "Other").charAt(0).toUpperCase() + (c || "other").slice(1));
+
 async function refreshHealth() {
   try {
     const h = await api("/api/health");
@@ -40,41 +51,8 @@ async function refreshHealth() {
     return true;
   } catch (e) {
     setStatus("down", "offline");
-    // Unreachable and no server configured yet -> guide the user to setup.
     if (!cfg.base) openSetup("Can't reach a server. Enter your AI AURA server URL.");
     return false;
-  }
-}
-
-// ---------- Connection setup ----------
-function openSetup(msg) {
-  $("cfgBase").value = cfg.base;
-  $("cfgToken").value = cfg.token;
-  const m = $("setupMsg"); m.classList.remove("ok"); m.textContent = msg || "";
-  $("setupScrim").classList.remove("hidden");
-  const s = $("setupSheet"); s.classList.remove("hidden", "leaving"); s.classList.add("enter");
-}
-function closeSetup() {
-  const s = $("setupSheet");
-  s.classList.remove("enter"); s.classList.add("leaving");
-  $("setupScrim").classList.add("hidden");
-  const done = () => { s.classList.add("hidden"); s.classList.remove("leaving"); };
-  s.addEventListener("transitionend", done, { once: true });
-  setTimeout(done, 340);
-}
-async function saveSetup() {
-  cfg.base = $("cfgBase").value.trim();
-  cfg.token = $("cfgToken").value.trim();
-  cfgSet("aiaura_base", cfg.base);
-  cfgSet("aiaura_token", cfg.token);
-  const m = $("setupMsg"); m.classList.remove("ok"); m.textContent = "Connecting…";
-  const ok = await refreshHealth();
-  if (ok) {
-    m.classList.add("ok"); m.textContent = "Connected ✓";
-    loadAssets(); refreshStats();
-    setTimeout(closeSetup, 500);
-  } else {
-    m.textContent = "Still can't connect — check the URL and token.";
   }
 }
 
@@ -84,9 +62,7 @@ async function loadExpiries() {
   box.innerHTML = "";
   expiries.forEach((s, i) => {
     const chip = document.createElement("button");
-    chip.className = "chip";
-    chip.type = "button";
-    chip.setAttribute("role", "radio");
+    chip.className = "chip"; chip.type = "button"; chip.setAttribute("role", "radio");
     chip.textContent = fmtExpiry(s);
     chip.setAttribute("aria-checked", i === 0 ? "true" : "false");
     if (i === 0) state.expiry = s;
@@ -104,30 +80,22 @@ function updateAssetLabel(symbol) {
   const payout = a && a.payout != null ? ` · ${a.payout}%` : "";
   $("assetBtnLabel").textContent = `${shortSym(symbol)} OTC${payout}`;
 }
-
 function setAsset(symbol) {
   state.asset = symbol;
   updateAssetLabel(symbol);
-  // Pre-subscribe so ANALYZE is instant (fire-and-forget).
-  api("/api/subscribe", {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ asset: symbol }),
-  }).catch(() => {});
+  api("/api/subscribe", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ asset: symbol }) }).catch(() => {});
 }
 
-// Fetch the live catalog and refresh payouts WITHOUT changing the selection
-// (Pocket Option payouts move over time — keep the shown numbers current).
 async function refreshAssets() {
   const { assets, count } = await api("/api/assets");
   state.assets = assets;
   $("analyzeBtn").disabled = assets.length === 0;
   $("controlsHint").textContent = `${count} OTC assets available`;
   if (state.asset) updateAssetLabel(state.asset);
-  // if the picker is open, re-render it with fresh payouts
   if (!$("assetSheet").classList.contains("hidden")) renderAssetList($("assetSearch").value);
   return assets;
 }
-
 async function loadAssets() {
   try {
     const assets = await refreshAssets();
@@ -138,11 +106,11 @@ async function loadAssets() {
   } catch (e) {
     $("analyzeBtn").disabled = true;
     $("assetBtnLabel").textContent = "Unavailable";
-    $("controlsHint").textContent = `Market data unavailable — ${e.message}. Check the server / PO_SSID.`;
+    $("controlsHint").textContent = `Market data unavailable — ${e.message}.`;
   }
 }
 
-// ---------- Asset picker bottom sheet ----------
+// ---------- Asset picker (grouped, keyboard-aware) ----------
 function renderAssetList(filter) {
   const list = $("assetList");
   const q = (filter || "").trim().toLowerCase();
@@ -150,52 +118,65 @@ function renderAssetList(filter) {
     !q || a.symbol.toLowerCase().includes(q) || (a.name || "").toLowerCase().includes(q));
   list.innerHTML = "";
   if (!items.length) {
-    const e = document.createElement("div");
-    e.className = "asset-empty";
-    e.textContent = "No matching assets";
-    list.appendChild(e);
-    return;
+    const e = document.createElement("div"); e.className = "asset-empty"; e.textContent = "No matching assets";
+    list.appendChild(e); return;
   }
+  // group by category, ordered PO-style
+  const groups = {};
+  items.forEach((a) => { (groups[a.category || "other"] ||= []).push(a); });
+  const cats = Object.keys(groups).sort((a, b) => catRank(a) - catRank(b) || a.localeCompare(b));
   const frag = document.createDocumentFragment();
-  items.forEach((a) => {
-    const row = document.createElement("div");
-    row.className = "asset-row";
-    row.setAttribute("role", "option");
-    row.setAttribute("aria-selected", a.symbol === state.asset ? "true" : "false");
-    const sym = document.createElement("span");
-    sym.className = "sym";
-    sym.textContent = shortSym(a.symbol) + " OTC";
-    const pay = document.createElement("span");
-    pay.className = "pay" + (a.payout != null && a.payout >= 80 ? " high" : "");
-    pay.textContent = a.payout != null ? a.payout + "%" : "—";
-    row.append(sym, pay);
-    row.addEventListener("click", () => { setAsset(a.symbol); closeSheet(); });
-    frag.appendChild(row);
+  cats.forEach((cat) => {
+    const h = document.createElement("div"); h.className = "asset-group"; h.textContent = catLabel(cat);
+    frag.appendChild(h);
+    groups[cat].sort((x, y) => x.symbol.localeCompare(y.symbol)).forEach((a) => {
+      const row = document.createElement("div");
+      row.className = "asset-row"; row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", a.symbol === state.asset ? "true" : "false");
+      const sym = document.createElement("span"); sym.className = "sym"; sym.textContent = shortSym(a.symbol) + " OTC";
+      const pay = document.createElement("span");
+      pay.className = "pay" + (a.payout != null && a.payout >= 80 ? " high" : "");
+      pay.textContent = a.payout != null ? a.payout + "%" : "—";
+      row.append(sym, pay);
+      row.addEventListener("click", () => { setAsset(a.symbol); closeSheet(); });
+      frag.appendChild(row);
+    });
   });
   list.appendChild(frag);
 }
+
+function applyViewport() {
+  const vv = window.visualViewport, sheet = $("assetSheet");
+  if (!vv || sheet.classList.contains("hidden")) return;
+  const kb = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+  sheet.style.bottom = kb + "px";                       // sit above the keyboard
+  sheet.style.maxHeight = (vv.height - 12) + "px";      // fit entirely in view
+}
+function clearViewport() { const s = $("assetSheet"); s.style.bottom = ""; s.style.maxHeight = ""; }
 
 function openSheet() {
   if (!state.assets.length) return;
   $("sheetScrim").classList.remove("hidden");
   const sheet = $("assetSheet");
-  sheet.classList.remove("hidden", "leaving");
-  sheet.classList.add("enter");
+  sheet.classList.remove("hidden", "leaving"); sheet.classList.add("enter");
   $("assetSearch").value = "";
   renderAssetList("");
-  refreshAssets().catch(() => {});  // ensure payouts are current when browsing
-  // scroll selected into view
+  refreshAssets().catch(() => {});
+  applyViewport();
+  if (pickerRefresh) clearInterval(pickerRefresh);
+  pickerRefresh = setInterval(() => { refreshAssets().catch(() => {}); }, 8000);  // live payouts
   requestAnimationFrame(() => {
     const sel = $("assetList").querySelector('[aria-selected="true"]');
     if (sel) sel.scrollIntoView({ block: "center" });
   });
 }
 function closeSheet() {
+  if (pickerRefresh) { clearInterval(pickerRefresh); pickerRefresh = null; }
+  $("assetSearch").blur();
   const sheet = $("assetSheet");
-  sheet.classList.remove("enter");
-  sheet.classList.add("leaving");
+  sheet.classList.remove("enter"); sheet.classList.add("leaving");
   $("sheetScrim").classList.add("hidden");
-  const done = () => { sheet.classList.add("hidden"); sheet.classList.remove("leaving"); };
+  const done = () => { sheet.classList.add("hidden"); sheet.classList.remove("leaving"); clearViewport(); };
   sheet.addEventListener("transitionend", done, { once: true });
   setTimeout(done, 340);
 }
@@ -206,11 +187,9 @@ async function analyze() {
   btn.classList.add("loading"); btn.disabled = true;
   $("controlsHint").textContent = "";
   try {
-    const r = await api("/api/analyze", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ asset: state.asset, expiry_s: state.expiry }),
-    });
-    showResult(r);
+    const r = await api("/api/analyze", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ asset: state.asset, expiry_s: state.expiry }) });
+    showResult(r, /*persist*/ true);
   } catch (e) {
     $("controlsHint").textContent = `Analyze failed: ${e.message}`;
   } finally {
@@ -218,24 +197,22 @@ async function analyze() {
   }
 }
 
-function showResult(r) {
-  state.lastSignalId = r.signal_id;
+function showResult(r, persist) {
+  state.lastResult = r;
+  if (persist) cfgSet("aiaura_last_signal", JSON.stringify(r));
   const card = $("resultCard");
   card.classList.remove("hidden", "buy", "sell");
-  // restart entrance animation
   void card.offsetWidth;
   card.classList.add(r.signal.toLowerCase());
 
   $("signalBig").textContent = r.signal;
   $("signalAsset").textContent = shortSym(r.asset) + " OTC";
   $("signalExpiry").textContent = fmtExpiry(r.expiry_s);
-
-  const pct = Math.round(r.strength * 100);
-  $("strengthBar").style.width = pct + "%";
-  $("strengthVal").textContent = pct + "%";
-  $("mAgreement").textContent = Math.round(r.agreement * 100) + "%";
+  const pct = Math.round((r.strength || 0) * 100);
+  $("strengthBar").style.width = pct + "%"; $("strengthVal").textContent = pct + "%";
+  $("mAgreement").textContent = Math.round((r.agreement || 0) * 100) + "%";
   $("mRegime").textContent = (r.regime || "—").replace(/_/g, " ");
-  $("mSuff").textContent = Math.round(r.data_sufficiency * 100) + "%";
+  $("mSuff").textContent = Math.round((r.data_sufficiency || 0) * 100) + "%";
   $("mEntry").textContent = r.entry_price != null ? r.entry_price : "—";
   $("mPayout").textContent = r.payout != null ? r.payout + "%" : "—";
   const sim = r.historical_similarity;
@@ -246,26 +223,25 @@ function showResult(r) {
   $("mModel").textContent = r.model_version || "—";
 
   const note = $("resultNote");
-  if (r.note) { note.textContent = r.note; note.classList.remove("hidden"); }
-  else note.classList.add("hidden");
-
+  if (r.note) { note.textContent = r.note; note.classList.remove("hidden"); } else note.classList.add("hidden");
   const t = new Date((r.created_at || Date.now() / 1000) * 1000);
   $("signalTime").textContent = "Generated " + t.toLocaleTimeString();
 
-  $("winBtn").disabled = false;
-  $("lossBtn").disabled = false;
-  $("feedbackDone").classList.add("hidden");
-  card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  const answered = !!(r._answered);
+  $("winBtn").disabled = answered; $("lossBtn").disabled = answered;
+  $("feedbackDone").classList.toggle("hidden", !answered);
+  if (persist) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 async function sendFeedback(result) {
-  if (!state.lastSignalId) return;
+  const r = state.lastResult;
+  if (!r || r._answered) return;
   $("winBtn").disabled = true; $("lossBtn").disabled = true;
   try {
-    await api("/api/feedback", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ signal_id: state.lastSignalId, result }),
-    });
+    await api("/api/feedback", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ result, prediction: r }) });
+    r._answered = true;
+    cfgDel("aiaura_last_signal");                 // answered -> stop persisting
     $("feedbackDone").classList.remove("hidden");
     refreshStats();
   } catch (e) {
@@ -277,25 +253,49 @@ async function sendFeedback(result) {
 async function refreshStats() {
   try {
     const s = await api("/api/stats");
-    $("sTotal").textContent = s.total;
+    $("sTotal").textContent = s.settled;             // only settled (answered) signals count
     $("sWin").textContent = s.wins;
     $("sLoss").textContent = s.losses;
     $("sRate").textContent = s.win_rate != null ? Math.round(s.win_rate * 100) + "%" : "—";
   } catch { /* ignore */ }
 }
 
+function restoreLastSignal() {
+  const raw = cfgGet("aiaura_last_signal");
+  if (!raw) return;
+  try {
+    const r = JSON.parse(raw);
+    if (r && r.signal && r.asset) showResult(r, /*persist*/ false);  // still answerable
+  } catch { cfgDel("aiaura_last_signal"); }
+}
+
+// ---------- Connection setup ----------
+function openSetup(msg) {
+  $("cfgBase").value = cfg.base; $("cfgToken").value = cfg.token;
+  const m = $("setupMsg"); m.classList.remove("ok"); m.textContent = msg || "";
+  $("setupScrim").classList.remove("hidden");
+  const s = $("setupSheet"); s.classList.remove("hidden", "leaving"); s.classList.add("enter");
+}
+function closeSetup() {
+  const s = $("setupSheet"); s.classList.remove("enter"); s.classList.add("leaving");
+  $("setupScrim").classList.add("hidden");
+  const done = () => { s.classList.add("hidden"); s.classList.remove("leaving"); };
+  s.addEventListener("transitionend", done, { once: true }); setTimeout(done, 340);
+}
+async function saveSetup() {
+  cfg.base = $("cfgBase").value.trim(); cfg.token = $("cfgToken").value.trim();
+  cfgSet("aiaura_base", cfg.base); cfgSet("aiaura_token", cfg.token);
+  const m = $("setupMsg"); m.classList.remove("ok"); m.textContent = "Connecting…";
+  const ok = await refreshHealth();
+  if (ok) { m.classList.add("ok"); m.textContent = "Connected ✓"; loadAssets(); refreshStats(); setTimeout(closeSetup, 500); }
+  else m.textContent = "Still can't connect — check the URL and token.";
+}
+
 function preventZoom() {
-  // Block iOS pinch-zoom and double-tap zoom (belt-and-suspenders with the
-  // viewport meta + touch-action).
   document.addEventListener("gesturestart", (e) => e.preventDefault());
   document.addEventListener("gesturechange", (e) => e.preventDefault());
-  let lastTouch = 0;
-  document.addEventListener("touchend", (e) => {
-    const now = Date.now();
-    if (now - lastTouch <= 300 && e.cancelable) e.preventDefault();
-    lastTouch = now;
-  }, { passive: false });
-  // Block context menu (long-press) globally.
+  let last = 0;
+  document.addEventListener("touchend", (e) => { const n = Date.now(); if (n - last <= 300 && e.cancelable) e.preventDefault(); last = n; }, { passive: false });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
@@ -314,17 +314,20 @@ function init() {
   $("sheetScrim").addEventListener("click", closeSheet);
   $("sheetHandle").addEventListener("click", closeSheet);
   $("assetSearch").addEventListener("input", (e) => renderAssetList(e.target.value));
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", applyViewport);
+    window.visualViewport.addEventListener("scroll", applyViewport);
+  }
 
+  restoreLastSignal();                 // keep the last signal answerable after navigation
   loadExpiries().catch(() => {});
   loadAssets();
   refreshHealth();
   refreshStats();
   setInterval(refreshHealth, 15000);
-  setInterval(() => { refreshAssets().catch(() => {}); }, 30000);  // keep payouts fresh
+  setInterval(() => { if ($("assetSheet").classList.contains("hidden")) refreshAssets().catch(() => {}); }, 30000);
 
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("/service-worker.js").catch(() => {});
-  }
+  if ("serviceWorker" in navigator) navigator.serviceWorker.register("/service-worker.js").catch(() => {});
 }
 
 document.addEventListener("DOMContentLoaded", init);

@@ -230,8 +230,8 @@ class SubscribeRequest(BaseModel):
 
 
 class FeedbackRequest(BaseModel):
-    signal_id: str
-    result: str  # WIN | LOSS
+    result: str            # WIN | LOSS
+    prediction: dict       # the analyze result the client stored
 
 
 def _start_collection(provider: PocketOptionMarketDataProvider) -> list:
@@ -310,7 +310,7 @@ def assets():
     provider = _require_provider()
     otc = provider.get_otc_assets()
     items = [
-        {"symbol": s, "name": info.name, "payout": info.payout}
+        {"symbol": s, "name": info.name, "payout": info.payout, "category": info.category}
         for s, info in sorted(otc.items())
     ]
     return {"assets": items, "count": len(items)}
@@ -388,27 +388,18 @@ def analyze(req: AnalyzeRequest):
     except Exception:
         logger.debug("secondary analysis failed", exc_info=True)
 
-    context = {
-        "sub_signals": [
-            {"name": s.name, "direction": s.direction, "score": round(s.score, 4), "detail": s.detail}
-            for s in result.sub_signals
-        ],
-        "candles_used": result.candles_used,
-        "timeframe_s": timeframe,
-    }
-    signal_id = state.store.record_prediction(
-        asset=asset, expiry_s=req.expiry_s, signal=result.signal, score=result.score,
-        strength=result.strength, agreement=result.agreement, regime=result.regime,
-        data_sufficiency=result.data_sufficiency, entry_price=entry_price,
-        market_ts=market_ts, prediction_latency_ms=latency_ms,
-        model_version=result.model_version, context=context,
-    )
-
+    sub_signals = [
+        {"name": s.name, "direction": s.direction, "score": round(s.score, 4), "detail": s.detail}
+        for s in result.sub_signals
+    ]
+    # NOTE: a signal is NOT recorded here. It is stored only when the user
+    # reports WIN/LOSS (see /api/feedback), so an un-reported signal never
+    # counts in the stats. The client holds this payload and sends it back.
     return {
-        "signal_id": signal_id,
         "asset": asset,
         "expiry_s": req.expiry_s,
         "signal": result.signal,
+        "score": round(result.score, 4),
         "strength": round(result.strength, 4),
         "agreement": round(result.agreement, 4),
         "regime": result.regime,
@@ -420,7 +411,7 @@ def analyze(req: AnalyzeRequest):
         "prediction_latency_ms": round(latency_ms, 1),
         "model_version": result.model_version,
         "note": result.note,
-        "sub_signals": context["sub_signals"],
+        "sub_signals": sub_signals,
         "strategies": strategies,
         "historical_similarity": similarity,
         "latency_viability": latency_viability,
@@ -430,25 +421,40 @@ def analyze(req: AnalyzeRequest):
 
 @app.post("/api/feedback", dependencies=[Depends(require_token)])
 def feedback(req: FeedbackRequest):
+    """Record a signal ONLY now, together with its WIN/LOSS outcome. A signal the
+    user never reports is never stored and never counted."""
     if state.store is None:
         raise HTTPException(status_code=503, detail="store unavailable")
-    try:
-        ok = state.store.record_result(req.signal_id, req.result)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    if not ok:
-        raise HTTPException(status_code=404, detail="unknown signal_id or already settled")
-    # Deep post-trade analysis on a loss: record WHY it lost (never retrain on a
-    # single trade — the batched auto-learner uses the accumulated evidence).
-    if req.result.upper() == "LOSS":
+    result = req.result.upper()
+    if result not in ("WIN", "LOSS"):
+        raise HTTPException(status_code=400, detail="result must be WIN or LOSS")
+    p = req.prediction or {}
+    if not p.get("asset") or not p.get("signal"):
+        raise HTTPException(status_code=400, detail="missing prediction payload")
+    context = {
+        "sub_signals": p.get("sub_signals", []),
+        "candles_used": p.get("candles_used"),
+        "strategies": p.get("strategies"),
+        "historical_similarity": p.get("historical_similarity"),
+    }
+    sid = state.store.record_prediction(
+        asset=p["asset"], expiry_s=int(p.get("expiry_s", 0)), signal=p["signal"],
+        score=p.get("score", 0.0), strength=p.get("strength", 0.0),
+        agreement=p.get("agreement", 0.0), regime=p.get("regime", ""),
+        data_sufficiency=p.get("data_sufficiency", 0.0), entry_price=p.get("entry_price"),
+        market_ts=p.get("market_ts"), prediction_latency_ms=p.get("prediction_latency_ms", 0.0),
+        model_version=p.get("model_version", ""), context=context,
+    )
+    state.store.record_result(sid, result)
+    if result == "LOSS":
         try:
             from services.learning_engine.post_trade import analyze_loss
-            pred = state.store.get_prediction(req.signal_id)
+            pred = state.store.get_prediction(sid)
             if pred:
-                state.store.set_analysis(req.signal_id, analyze_loss(pred))
+                state.store.set_analysis(sid, analyze_loss(pred))
         except Exception:
             logger.debug("loss analysis failed", exc_info=True)
-    return {"ok": True}
+    return {"ok": True, "signal_id": sid}
 
 
 @app.get("/api/losses", dependencies=[Depends(require_token)])
