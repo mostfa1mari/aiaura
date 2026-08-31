@@ -29,7 +29,30 @@ when the worker serves the PWA itself).
 
 ---
 
-## Step-by-step
+## Recommended for 24/7 without your PC: everything on Railway
+
+The whole app is a single service — it serves the PWA, the API, continuous data
+collection, and the auto-learner together. So the simplest always-on setup is
+ONE Railway service with ONE persistent volume. No Vercel/Supabase needed (add
+them later if you want).
+
+1. Push this repo to GitHub.
+2. railway.app → **New Project → Deploy from GitHub** (it reads the `Dockerfile`).
+3. Add a **Volume** mounted at **`/app/data`** (persists predictions, ticks, and
+   trained models across restarts — everything lives under `data/`).
+4. Set **Variables**:
+   - `PO_SSID` = your captured auth frame (**you** paste it; it is your
+     credential and never goes in code/chat).
+   - `AIAURA_TOKEN` = a long random string (protects the public API).
+   - optional: `AIAURA_COLLECT=all` to collect every OTC pair.
+5. Deploy. Railway gives one HTTPS URL like `https://aiaura-xxxx.up.railway.app`.
+   Open it on any device, **Add to Home Screen**, enter the URL + token in the
+   app's ⚙ once (or leave URL empty — it's same-origin). Done — 24/7, no PC.
+
+The two steps only you can do: create the Railway account, and paste `PO_SSID` +
+`AIAURA_TOKEN` into Railway's Variables. Everything else is already wired.
+
+## Step-by-step (split: Vercel + Supabase + worker)
 
 ### 1. Supabase (database)
 1. Create a project at supabase.com.

@@ -46,6 +46,10 @@ from services.signal_engine.store import make_store
 logger = logging.getLogger("aiaura.api")
 
 WEB_DIR = PROJECT_ROOT / "apps" / "web"
+# Trained models live under data/ by default so a single persistent volume
+# (mounted at /app/data in the cloud) preserves predictions, ticks AND models
+# across restarts. Override with AIAURA_MODELS_DIR.
+MODELS_DIR = Path(os.environ.get("AIAURA_MODELS_DIR", str(PROJECT_ROOT / "data" / "models")))
 
 # Offered expiries (seconds) and the candle timeframe used to analyze each.
 EXPIRY_TIMEFRAME = {
@@ -93,7 +97,7 @@ async def lifespan(_app: FastAPI):
 
     # Use a trained champion model if one exists; otherwise the baseline.
     try:
-        registry = ModelRegistry(PROJECT_ROOT / "models")
+        registry = ModelRegistry(MODELS_DIR)
         champ = registry.load_champion()
         if champ is not None:
             rec = registry.champion_record()
@@ -120,7 +124,7 @@ async def lifespan(_app: FastAPI):
         if (os.environ.get("AIAURA_AUTOLEARN", "1") or "1") != "0":
             def _on_promote(version: str):
                 try:
-                    reg = ModelRegistry(PROJECT_ROOT / "models")
+                    reg = ModelRegistry(MODELS_DIR)
                     model = reg.load_champion()
                     rec = reg.champion_record()
                     if model is not None and rec is not None:
@@ -139,7 +143,7 @@ async def lifespan(_app: FastAPI):
             if os.environ.get("AIAURA_AUTOLEARN_LOSS_TRIGGER"):
                 cfg.loss_trigger = int(os.environ["AIAURA_AUTOLEARN_LOSS_TRIGGER"])
             state.auto_learner = AutoLearner(
-                provider, state.store, PROJECT_ROOT / "models", _on_promote, cfg)
+                provider, state.store, MODELS_DIR, _on_promote, cfg)
             state.auto_learner.start()
         logger.info("provider connected")
     except MissingCredentialError as exc:
@@ -465,7 +469,7 @@ def model_info():
             drift = detect_drift(s["wins"], s["settled"], float(baseline_wr))
     records = []
     try:
-        records = [asdict(r) for r in ModelRegistry(PROJECT_ROOT / "models").records()]
+        records = [asdict(r) for r in ModelRegistry(MODELS_DIR).records()]
     except Exception:
         pass
     al = state.auto_learner
