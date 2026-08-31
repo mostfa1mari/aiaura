@@ -120,6 +120,36 @@ class TickStore:
             self.files_written.append(path)
             logger.debug("flushed %d ticks -> %s", len(ticks), path)
 
+    # -- retention -----------------------------------------------------
+
+    def prune_old(self, retention_days: int) -> int:
+        """Delete raw-tick day directories older than ``retention_days`` so a
+        bounded disk/volume never fills. Returns the number of days removed.
+        Keeps everything when retention_days <= 0."""
+        import shutil
+        from datetime import timedelta
+
+        if retention_days <= 0 or not self.root.exists():
+            return 0
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+        removed = 0
+        for asset_dir in self.root.iterdir():
+            if not asset_dir.is_dir():
+                continue
+            for day_dir in asset_dir.iterdir():
+                if not day_dir.is_dir():
+                    continue
+                name = day_dir.name
+                if len(name) == 10 and name[4] == "-" and name < cutoff:
+                    try:
+                        shutil.rmtree(day_dir)
+                        removed += 1
+                    except OSError:
+                        logger.warning("could not prune %s", day_dir)
+        if removed:
+            logger.info("pruned %d old tick day-dir(s) older than %s", removed, cutoff)
+        return removed
+
     # -- reading -------------------------------------------------------
 
     def read_day(self, asset: str, day: str) -> Optional[pd.DataFrame]:

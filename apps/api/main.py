@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -80,6 +81,7 @@ class AppState:
     ml_predictor: Optional[MLPredictor] = None
     model_record: Optional[object] = None
     auto_learner: Optional[AutoLearner] = None
+    prune_stop: Optional[object] = None
     subscribed: set = set()
     startup_error: Optional[str] = None
 
@@ -94,6 +96,25 @@ async def lifespan(_app: FastAPI):
     # and report status so the UI can show a clear message.
     state.store = make_store(PROJECT_ROOT / "data" / "aiaura.db")
     state.tick_store = TickStore(PROJECT_ROOT / "data" / "raw" / "ticks")
+
+    # Bounded storage: delete raw ticks older than N days so the volume never
+    # fills. Default 7; AIAURA_TICKS_RETENTION_DAYS=0 keeps everything.
+    _retention = int(os.environ.get("AIAURA_TICKS_RETENTION_DAYS", "7"))
+    try:
+        state.tick_store.prune_old(_retention)
+    except Exception:
+        logger.warning("startup prune failed", exc_info=True)
+    _prune_stop = threading.Event()
+    state.prune_stop = _prune_stop
+
+    def _prune_loop():
+        while not _prune_stop.wait(86400):
+            try:
+                state.tick_store.prune_old(_retention)
+            except Exception:
+                logger.warning("daily prune failed", exc_info=True)
+
+    threading.Thread(target=_prune_loop, name="tick-pruner", daemon=True).start()
 
     # Use a trained champion model if one exists; otherwise the baseline.
     try:
@@ -155,6 +176,11 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
+        if state.prune_stop is not None:
+            try:
+                state.prune_stop.set()
+            except Exception:
+                pass
         if state.auto_learner is not None:
             try:
                 state.auto_learner.stop()

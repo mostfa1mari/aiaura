@@ -65,6 +65,32 @@ def test_read_missing_day_returns_none(tmp_path):
     assert store.read_day("EURUSD_otc", "1999-01-01") is None
 
 
+def test_prune_old_removes_stale_days(tmp_path):
+    import time as _t
+    from datetime import datetime, timedelta, timezone
+
+    store = TickStore(tmp_path, flush_interval_s=10_000, flush_max_ticks=10_000)
+    today = datetime.now(timezone.utc)
+    old = today - timedelta(days=30)
+    old_ts = old.timestamp()
+    now_ts = _t.time()
+    store.append(tick(1, old_ts))   # 30 days ago
+    store.append(tick(2, now_ts))   # today
+    store.close()
+
+    old_day = old.strftime("%Y-%m-%d")
+    new_day = today.strftime("%Y-%m-%d")
+    assert (tmp_path / "EURUSD_otc" / old_day).exists()
+
+    removed = store.prune_old(retention_days=7)
+    assert removed >= 1
+    assert not (tmp_path / "EURUSD_otc" / old_day).exists()   # old gone
+    assert (tmp_path / "EURUSD_otc" / new_day).exists()        # recent kept
+
+    # retention 0 keeps everything
+    assert store.prune_old(retention_days=0) == 0
+
+
 def test_partial_flush_failure_restores_all_unwritten_groups(tmp_path, monkeypatch):
     """If one group's write fails, that group AND all not-yet-written groups
     must be restored to the buffer — never silently dropped."""
